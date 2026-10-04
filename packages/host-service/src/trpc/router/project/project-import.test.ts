@@ -179,6 +179,41 @@ describe("createFromImportLocal idempotency", () => {
 });
 
 describe("project setup repository relinking", () => {
+	it("does not persist or broadcast repeated setup with an unchanged explicit remote", async () => {
+		const db = createTestDb();
+		const { api } = createRecordingApiStub();
+		const ctx = createTestContext(db, api);
+		const root = await createTempGitRepo();
+		await createUserSimpleGit(root).addRemote(
+			"origin",
+			"git@github.com:acme/demo.git",
+		);
+		const projectId = randomUUID();
+		const caller = createCallerFactory(projectRouter)(ctx);
+		const input = {
+			projectId,
+			origin: {
+				name: "Custom Name",
+				repoCloneUrl: "https://github.com/acme/demo",
+			},
+			mode: { kind: "import" as const, repoPath: root },
+		};
+		await caller.setup(input);
+		db.update(projects)
+			.set({ updatedAt: 1 })
+			.where(eq(projects.id, projectId))
+			.run();
+		const before = db.select().from(projects).get();
+		const broadcastProjectChanged = mock(() => {});
+		ctx.eventBus = {
+			broadcastProjectChanged,
+		} as unknown as typeof ctx.eventBus;
+
+		expect(await caller.setup(input)).toEqual({ repoPath: root });
+		expect(db.select().from(projects).get()).toEqual(before);
+		expect(broadcastProjectChanged).not.toHaveBeenCalled();
+	});
+
 	it("refreshes an explicitly selected remote at the same path without changing project customizations", async () => {
 		const db = createTestDb();
 		const { api } = createRecordingApiStub();
