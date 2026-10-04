@@ -8,7 +8,17 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
-import { chmod, copyFile, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
+import {
+	chmod,
+	copyFile,
+	mkdir,
+	mkdtemp,
+	readFile,
+	rename,
+	rm,
+	stat,
+	writeFile,
+} from "node:fs/promises";
 import path from "node:path";
 import { getBinDir } from "@superset/agent-setup/paths";
 import { app } from "electron";
@@ -128,14 +138,49 @@ async function persistBundledCli(
 	bundledCliPath: string,
 ): Promise<string> {
 	const cliDir = path.join(binDir, ".superset-cli");
+	const cliPath = path.join(cliDir, "superset");
+	const metadataPath = path.join(cliDir, "installed.json");
+	const source = await stat(bundledCliPath);
+	const sourceIdentity = {
+		version: app.getVersion(),
+		size: source.size,
+		mtime: Math.trunc(source.mtimeMs),
+	};
+	const installedIdentity = async () => {
+		const installed = await stat(cliPath);
+		return {
+			size: installed.size,
+			mtime: installed.mtimeMs,
+			ctime: installed.ctimeMs,
+			ino: installed.ino,
+			mode: installed.mode,
+		};
+	};
+	try {
+		const expected = JSON.stringify({
+			source: sourceIdentity,
+			installed: await installedIdentity(),
+		});
+		if ((await readFile(metadataPath, "utf8")) === expected) return cliPath;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
 	await mkdir(cliDir, { recursive: true });
 	const stagingDir = await mkdtemp(path.join(cliDir, ".install-"));
-	const cliPath = path.join(cliDir, "superset");
 	try {
 		const stagedPath = path.join(stagingDir, "superset");
 		await copyFile(bundledCliPath, stagedPath);
 		await chmod(stagedPath, 0o755);
 		await rename(stagedPath, cliPath);
+		const stagedMetadata = path.join(stagingDir, "installed.json");
+		await writeFile(
+			stagedMetadata,
+			JSON.stringify({
+				source: sourceIdentity,
+				installed: await installedIdentity(),
+			}),
+		);
+		await rename(stagedMetadata, metadataPath);
 		return cliPath;
 	} finally {
 		await rm(stagingDir, { recursive: true, force: true });

@@ -2,12 +2,14 @@ import { afterEach, beforeEach, describe, expect, it } from "bun:test";
 import { spawnSync } from "node:child_process";
 import {
 	chmodSync,
+	copyFileSync,
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
 	readFileSync,
 	rmSync,
 	statSync,
+	utimesSync,
 	writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -85,6 +87,74 @@ describe("bundled CLI", () => {
 		expect(status).toBe("installed");
 		expect(readFileSync(shimPath, "utf-8")).toContain(bundledCliPath);
 	});
+
+	it.skipIf(process.platform === "win32")(
+		"reuses the persistent Linux CLI across AppImage remounts",
+		async () => {
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath,
+				platform: "linux",
+			});
+			const cliPath = path.join(binDir, ".superset-cli", "superset");
+			const installed = statSync(cliPath);
+			const source = statSync(bundledCliPath);
+			const nextPath = path.join(tempDir, "next-mount", "superset");
+			mkdirSync(path.dirname(nextPath));
+			copyFileSync(bundledCliPath, nextPath);
+			utimesSync(nextPath, source.atime, source.mtime);
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath: nextPath,
+				platform: "linux",
+			});
+			expect(statSync(cliPath).ino).toBe(installed.ino);
+			expect(statSync(cliPath).mtimeMs).toBe(installed.mtimeMs);
+		},
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"refreshes a same-sized Linux CLI rebuilt at the same path",
+		async () => {
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath,
+				platform: "linux",
+			});
+			const source = statSync(bundledCliPath);
+			writeFileSync(bundledCliPath, "#!/bin/xx\n");
+			utimesSync(bundledCliPath, source.atime, new Date(source.mtimeMs + 1000));
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath,
+				platform: "linux",
+			});
+			expect(
+				readFileSync(path.join(binDir, ".superset-cli", "superset"), "utf8"),
+			).toBe("#!/bin/xx\n");
+		},
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"repairs a modified persistent Linux CLI",
+		async () => {
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath,
+				platform: "linux",
+			});
+			const cliPath = path.join(binDir, ".superset-cli", "superset");
+			writeFileSync(cliPath, "broken");
+			await installBundledCliShim({
+				binDir,
+				bundledCliPath,
+				platform: "linux",
+			});
+			expect(readFileSync(cliPath, "utf8")).toBe(
+				readFileSync(bundledCliPath, "utf8"),
+			);
+		},
+	);
 
 	it.skipIf(process.platform === "win32")(
 		"runs the Linux CLI after its AppImage resources disappear",
