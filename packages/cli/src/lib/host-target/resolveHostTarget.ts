@@ -10,7 +10,7 @@ import SuperJSON from "superjson";
 import type { ApiClient } from "../api-client";
 import { isProcessAlive, readManifest } from "../host/manifest";
 import { getRelayUrl } from "../host/relay-url";
-import { exchangeApiKey } from "./exchangeApiKey";
+import { createHostTokenProvider } from "./exchangeApiKey";
 import { readJwtSubject } from "./readJwtSubject";
 
 export type HostServiceClient = ReturnType<
@@ -23,6 +23,7 @@ export interface HostWsEndpoint {
 	baseWsUrl: string;
 	/** Passed as the `?token=` query param on WS routes. */
 	token: string;
+	getToken?: () => Promise<string>;
 }
 
 export type ResolvedHostTarget = {
@@ -93,7 +94,8 @@ export async function resolveHostTarget(
 	}
 
 	const routingKey = buildHostRoutingKey(options.organizationId, targetHostId);
-	const userJwt = await exchangeApiKey(options.userJwt);
+	const getToken = createHostTokenProvider(options.userJwt);
+	const userJwt = await getToken();
 	const relayUrl = await getRelayUrl(options.api);
 	return {
 		kind: "remote",
@@ -103,16 +105,17 @@ export async function resolveHostTarget(
 				httpBatchLink({
 					url: `${relayUrl}/hosts/${routingKey}/trpc`,
 					transformer: SuperJSON,
-					headers: {
-						Authorization: `Bearer ${userJwt}`,
+					headers: async () => ({
+						Authorization: `Bearer ${await getToken()}`,
 						"x-superset-client-machine-id": localHostId,
-					},
+					}),
 				}),
 			],
 		}),
 		ws: {
 			baseWsUrl: `${relayUrl.replace(/^http/, "ws")}/hosts/${routingKey}`,
 			token: userJwt,
+			getToken,
 		},
 	};
 }

@@ -4,7 +4,7 @@ import { env } from "../env";
 import { resolveHostTarget } from "./resolveHostTarget";
 
 const apiKey = ["sk", "live", "remote", "host", "fixture"].join("_");
-const jwt = "header.payload.signature";
+const jwt = `header.${Buffer.from(JSON.stringify({ exp: 4_000_000_000 })).toString("base64url")}.signature`;
 const requests: { url: string; headers: Headers }[] = [];
 let tokenResponse = () => Response.json({ token: jwt });
 const server = Bun.serve({
@@ -44,6 +44,88 @@ function resolve(bearer = apiKey) {
 }
 
 describe("resolveHostTarget remote authentication", () => {
+	test("exchanges test API keys", async () => {
+		const key = ["sk", "test", "fixture"].join("_");
+		const target = await resolve(key);
+		await target.client.workspace.list.query();
+		expect(requests[0]?.headers.get("x-api-key")).toBe(key);
+		expect(requests.at(-1)?.headers.get("authorization")).toBe(`Bearer ${jwt}`);
+	});
+
+	test.each([
+		"HTTP",
+		"WebSocket",
+	])("refreshes expiring credentials for %s connections", async (transport) => {
+		const clock = spyOn(Date, "now").mockReturnValue(1_000_000);
+		const first = `header.${Buffer.from(JSON.stringify({ exp: 4600 })).toString("base64url")}.signature`;
+		tokenResponse = () => Response.json({ token: first });
+		try {
+			const target = await resolve();
+			await target.client.workspace.list.query();
+			expect(
+				requests.filter((r) => r.url.endsWith("/api/auth/token")),
+			).toHaveLength(1);
+			clock.mockReturnValue(4_600_000);
+			tokenResponse = () => Response.json({ token: jwt });
+			if (transport === "WebSocket")
+				expect(await target.ws.getToken?.()).toBe(jwt);
+			await target.client.workspace.list.query();
+			expect(requests.at(-1)?.headers.get("authorization")).toBe(
+				`Bearer ${jwt}`,
+			);
+			expect(await target.ws.getToken?.()).toBe(jwt);
+			expect(
+				requests.filter((r) => r.url.endsWith("/api/auth/token")),
+			).toHaveLength(2);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	test("shares concurrent refreshes and retries a failed exchange", async () => {
+		const clock = spyOn(Date, "now").mockReturnValue(1_000_000);
+		const first = `header.${Buffer.from(JSON.stringify({ exp: 4600 })).toString("base64url")}.signature`;
+		tokenResponse = () => Response.json({ token: first });
+		try {
+			const target = await resolve();
+			clock.mockReturnValue(4_600_000);
+			tokenResponse = () => new Response(null, { status: 503 });
+			await expect(target.ws.getToken?.()).rejects.toThrow("HTTP 503");
+			tokenResponse = () => Response.json({ token: jwt });
+			expect(
+				await Promise.all([target.ws.getToken?.(), target.ws.getToken?.()]),
+			).toEqual([jwt, jwt]);
+			expect(
+				requests.filter((r) => r.url.endsWith("/api/auth/token")),
+			).toHaveLength(3);
+		} finally {
+			clock.mockRestore();
+		}
+	});
+
+	test("reports body transport failures as connectivity errors", async () => {
+		const read = spyOn(Response.prototype, "text").mockRejectedValue(
+			new TypeError("connection closed"),
+		);
+		const json = spyOn(Response.prototype, "json").mockRejectedValue(
+			new TypeError("connection closed"),
+		);
+		try {
+			await expect(resolve()).rejects.toThrow(
+				"Could not exchange API key for remote host access",
+			);
+		} finally {
+			read.mockRestore();
+			json.mockRestore();
+		}
+	});
+
+	test("reports completed malformed JSON as an invalid token", async () => {
+		tokenResponse = () => new Response("invalid json");
+		await expect(resolve()).rejects.toThrow(
+			"Superset API returned an invalid remote host token",
+		);
+	});
 	test("exchanges an API key for HTTP and WebSocket credentials", async () => {
 		const target = await resolve();
 		expect(await target.client.workspace.list.query()).toEqual([]);

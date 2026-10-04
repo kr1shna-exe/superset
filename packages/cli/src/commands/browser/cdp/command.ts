@@ -23,9 +23,10 @@ export default command({
 				"Run: superset browser list --workspace <id>",
 			);
 		}
+		const token = ws.getToken ? await ws.getToken() : ws.token;
 		const url = `${ws.baseWsUrl}/browser/${encodeURIComponent(
 			options.pane,
-		)}/cdp?workspaceId=${encodeURIComponent(options.workspace)}&token=${encodeURIComponent(ws.token)}`;
+		)}/cdp?workspaceId=${encodeURIComponent(options.workspace)}&token=${encodeURIComponent(token)}`;
 		return {
 			data: { url },
 			// The URL embeds a bearer token — treat it as a credential (keep it out

@@ -4,8 +4,40 @@ import { env } from "../env";
 
 const tokenResponse = z.object({ token: z.string().trim().min(1) });
 
+function isApiKey(bearer: string): boolean {
+	return bearer.startsWith("sk_live_") || bearer.startsWith("sk_test_");
+}
+
+export function createHostTokenProvider(bearer: string): () => Promise<string> {
+	let cached: { token: string; expiresAt: number } | undefined;
+	let pending: Promise<string> | undefined;
+	return async () => {
+		if (!isApiKey(bearer)) return bearer;
+		if (cached && Date.now() < cached.expiresAt - 30_000) return cached.token;
+		pending ??= exchangeApiKey(bearer)
+			.then((token) => {
+				let expiresAt = 0;
+				try {
+					const payload: unknown = JSON.parse(
+						Buffer.from(token.split(".")[1] ?? "", "base64url").toString(),
+					);
+					const parsed = z
+						.object({ exp: z.number().finite() })
+						.safeParse(payload);
+					if (parsed.success) expiresAt = parsed.data.exp * 1000;
+				} catch {}
+				cached = { token, expiresAt };
+				return token;
+			})
+			.finally(() => {
+				pending = undefined;
+			});
+		return pending;
+	};
+}
+
 export async function exchangeApiKey(bearer: string): Promise<string> {
-	if (!bearer.startsWith("sk_live_")) return bearer;
+	if (!isApiKey(bearer)) return bearer;
 
 	let response: Response;
 	try {
@@ -29,9 +61,22 @@ export async function exchangeApiKey(bearer: string): Promise<string> {
 		);
 	}
 
-	const parsed = tokenResponse.safeParse(
-		await response.json().catch(() => null),
-	);
+	let body: string;
+	try {
+		body = await response.text();
+	} catch {
+		throw new CLIError(
+			"Could not exchange API key for remote host access",
+			"Check connectivity to the Superset API and try again",
+		);
+	}
+	let data: unknown;
+	try {
+		data = JSON.parse(body);
+	} catch {
+		throw new CLIError("Superset API returned an invalid remote host token");
+	}
+	const parsed = tokenResponse.safeParse(data);
 	if (!parsed.success) {
 		throw new CLIError("Superset API returned an invalid remote host token");
 	}
