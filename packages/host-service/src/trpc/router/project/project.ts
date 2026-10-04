@@ -813,6 +813,9 @@ export const projectRouter = router({
 
 					rejectIfRepoint(resolved.repoPath);
 					if (existing && existing.repoPath === resolved.repoPath) {
+						if (origin.repoCloneUrl) {
+							persistLocalProject(ctx, input.projectId, resolved);
+						}
 						return {
 							repoPath: existing.repoPath,
 						};
