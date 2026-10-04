@@ -9,15 +9,12 @@ import {
 } from "@superset/db/schema";
 import { seedDefaultStatuses } from "@superset/db/seed-default-statuses";
 import {
-	buildTaskListConditions,
 	buildTaskListOrderBy,
-	InvalidDueDateRangeError,
-	normalizeDueDateRange,
 	taskColumns,
 	taskCreatedAtSortKey,
 } from "@superset/db/task-list-query";
 import { getCurrentTxid } from "@superset/db/utils";
-import { TRPCError, type TRPCRouterRecord } from "@trpc/server";
+import type { TRPCRouterRecord } from "@trpc/server";
 import { and, asc, desc, eq, isNull, lt, or } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { z } from "zod";
@@ -42,9 +39,9 @@ import {
 	labelActivity,
 	recordTaskActivity,
 } from "./activity";
+import { buildTaskListFilters } from "./list-filters";
 import {
 	createTaskSchema,
-	type TaskListFilterInput,
 	taskListInputSchema,
 	taskListPageInputSchema,
 	updateTaskSchema,
@@ -401,40 +398,6 @@ function selectTaskListRows() {
 		.leftJoin(assignee, eq(tasks.assigneeId, assignee.id))
 		.leftJoin(creator, eq(tasks.creatorId, creator.id))
 		.leftJoin(status, eq(tasks.statusId, status.id));
-}
-
-function buildTaskListFilters(
-	organizationId: string,
-	userId: string,
-	input: TaskListFilterInput | null | undefined,
-) {
-	let dueDateRange: { from?: Date; to?: Date };
-	try {
-		dueDateRange = normalizeDueDateRange(
-			input?.dueDateFrom ?? undefined,
-			input?.dueDateTo ?? undefined,
-		);
-	} catch (error) {
-		if (error instanceof InvalidDueDateRangeError) {
-			throw new TRPCError({ code: "BAD_REQUEST", message: error.message });
-		}
-		throw error;
-	}
-
-	return buildTaskListConditions({
-		organizationId,
-		nativeOnly: input?.nativeOnly ?? undefined,
-		statusId: input?.statusId ?? undefined,
-		priority: input?.priority ?? undefined,
-		assigneeId: input?.assigneeMe ? userId : (input?.assigneeId ?? undefined),
-		creatorId: input?.creatorMe ? userId : undefined,
-		search: input?.search ?? undefined,
-		externalProjectId: input?.externalProjectId ?? undefined,
-		externalProjectName: input?.externalProjectName ?? undefined,
-		externalCycleId: input?.externalCycleId ?? undefined,
-		dueDateFrom: dueDateRange.from,
-		dueDateTo: dueDateRange.to,
-	});
 }
 
 export const taskRouter = {
