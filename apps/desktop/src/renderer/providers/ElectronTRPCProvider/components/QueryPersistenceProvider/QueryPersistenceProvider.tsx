@@ -30,7 +30,9 @@ export function QueryPersistenceProvider({
 		if (!didRestore.current) {
 			didRestore.current = true;
 			void persistQueryClientRestore(options)
-				.catch(() => undefined)
+				.catch((error) => {
+					console.warn("[query-persistence] Failed to restore cache", error);
+				})
 				.finally(() => setIsRestoring(false));
 		}
 		if (!isRestoring) return subscribeToQueryPersistence(options);

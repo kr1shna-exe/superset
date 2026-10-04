@@ -120,9 +120,10 @@ test.each([
 	expect(result.current.data).not.toBe("cached");
 });
 
-test("a restore error releases the fetch gate", async () => {
+test("a restore rejection is logged and releases the fetch gate", async () => {
 	spyOn(console, "error").mockImplementation(() => {});
-	spyOn(console, "warn").mockImplementation(() => {});
+	const warn = spyOn(console, "warn").mockImplementation(() => {});
+	const error = new Error("cache removal unavailable");
 	const client = createClient();
 	const queryFn = mock(async () => "network");
 	const persistOptions = {
@@ -131,7 +132,9 @@ test("a restore error releases the fetch gate", async () => {
 				throw new Error("invalid cache");
 			},
 			persistClient: () => {},
-			removeClient: mock(() => {}),
+			removeClient: mock(async () => {
+				throw error;
+			}),
 		},
 	};
 	const { result } = renderHook(
@@ -154,4 +157,8 @@ test("a restore error releases the fetch gate", async () => {
 	expect(result.current).toBe(false);
 	expect(queryFn).toHaveBeenCalledTimes(1);
 	expect(persistOptions.persister.removeClient).toHaveBeenCalledTimes(1);
+	expect(warn).toHaveBeenCalledWith(
+		"[query-persistence] Failed to restore cache",
+		error,
+	);
 });

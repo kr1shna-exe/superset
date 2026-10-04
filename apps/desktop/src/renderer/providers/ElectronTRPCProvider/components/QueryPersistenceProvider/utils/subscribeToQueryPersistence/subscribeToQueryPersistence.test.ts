@@ -195,3 +195,44 @@ test("a failed save does not prevent the next cache update from being saved", as
 	expect(saved).toHaveLength(1);
 	expect(saved[0]?.clientState.queries[0]?.state.data).toBe(2);
 });
+
+test.each([
+	"interval",
+	"blur",
+	"pagehide",
+	"cleanup",
+])("%s retries a failed save without a cache update", async (trigger) => {
+	spyOn(console, "warn").mockImplementation(() => {});
+	let attempts = 0;
+	subscribe((value) => {
+		if (++attempts === 1)
+			return Promise.reject(new Error("storage unavailable"));
+		saved.push(value);
+	});
+	client.setQueryData(["workspace"], 1);
+	jest.advanceTimersByTime(30_000);
+	await settleSave();
+	if (trigger === "interval") jest.advanceTimersByTime(30_000);
+	else if (trigger === "cleanup") {
+		stop?.();
+		stop = undefined;
+	} else window.dispatchEvent(new Event(trigger));
+	await settleSave();
+	expect(saved).toHaveLength(1);
+	expect(saved[0]?.clientState.queries[0]?.state.data).toBe(1);
+});
+
+test("failed cleanup does not leave a retry timer running", async () => {
+	spyOn(console, "warn").mockImplementation(() => {});
+	const persist = mock(async () => {
+		throw new Error("storage unavailable");
+	});
+	subscribe(persist);
+	client.setQueryData(["workspace"], 1);
+	stop?.();
+	stop = undefined;
+	await settleSave();
+	jest.advanceTimersByTime(60_000);
+	await settleSave();
+	expect(persist).toHaveBeenCalledTimes(1);
+});

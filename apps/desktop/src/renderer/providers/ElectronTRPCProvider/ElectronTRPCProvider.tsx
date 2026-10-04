@@ -2,7 +2,6 @@ import {
 	CLOUD_QUERY_KEY_ROOT,
 	CloudClientProvider,
 } from "@superset/cloud-client";
-import { createAsyncStoragePersister } from "@tanstack/query-async-storage-persister";
 import {
 	defaultShouldDehydrateQuery,
 	focusManager,
@@ -20,9 +19,9 @@ import {
 	hostServiceQueryRetry,
 	hostServiceQueryRetryDelay,
 } from "renderer/lib/host-service-client";
-import superjson from "superjson";
 import { electronReactClient } from "../../lib/trpc-client";
 import { QueryPersistenceProvider } from "./components/QueryPersistenceProvider";
+import { createQueryPersister } from "./utils/createQueryPersister";
 
 // In Electron, blurring the BrowserWindow keeps document.visibilityState
 // "visible", so React Query's default visibilitychange listener never fires.
@@ -73,22 +72,14 @@ for (const root of CLOUD_TRPC_ROUTER_ROOTS) {
 // IndexedDB-backed persister. localStorage is too small (~5MB) for the
 // volume of PR/issue rows we cache. idb-keyval uses a single object store
 // keyed by the persister's `key` below.
-const persister = createAsyncStoragePersister({
-	storage: {
-		getItem: async (key) => (await get<string>(key)) ?? null,
-		setItem: async (key, value) => {
-			await set(key, value);
-		},
-		removeItem: async (key) => {
-			await del(key);
-		},
+const persister = createQueryPersister({
+	getItem: async (key) => (await get<string>(key)) ?? null,
+	setItem: async (key, value) => {
+		await set(key, value);
 	},
-	key: "superset-rq-cache",
-	throttleTime: 0,
-	// Query data carries Dates (tRPC's superjson transformer); plain JSON would
-	// restore them as strings.
-	serialize: superjson.stringify,
-	deserialize: (cached) => superjson.parse(cached),
+	removeItem: async (key) => {
+		await del(key);
+	},
 });
 
 // Whitelist of queryKey prefixes worth persisting — anything else (auth

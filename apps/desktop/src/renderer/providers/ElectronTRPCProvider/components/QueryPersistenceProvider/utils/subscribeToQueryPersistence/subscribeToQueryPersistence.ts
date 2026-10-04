@@ -8,12 +8,19 @@ export function subscribeToQueryPersistence(
 	saveIntervalMs = 30_000,
 ) {
 	let dirty = false;
+	let stopped = false;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	let pendingSave: Promise<void> | undefined;
 
 	const clearTimer = () => {
 		clearTimeout(timer);
 		timer = undefined;
+	};
+
+	const scheduleSave = () => {
+		if (!stopped && timer === undefined) {
+			timer = setTimeout(() => void flush(), saveIntervalMs);
+		}
 	};
 
 	const flush = (): Promise<void> => {
@@ -23,6 +30,8 @@ export function subscribeToQueryPersistence(
 		dirty = false;
 		pendingSave = persistQueryClientSave(options)
 			.catch((error) => {
+				dirty = true;
+				scheduleSave();
 				console.warn("[query-persistence] Failed to save cache", error);
 			})
 			.finally(() => {
@@ -34,9 +43,7 @@ export function subscribeToQueryPersistence(
 	const onCacheChange = ({ type }: { type: string }) => {
 		if (type !== "added" && type !== "updated" && type !== "removed") return;
 		dirty = true;
-		if (timer === undefined) {
-			timer = setTimeout(() => void flush(), saveIntervalMs);
-		}
+		scheduleSave();
 	};
 
 	const onLeave = () => void flush();
@@ -54,6 +61,7 @@ export function subscribeToQueryPersistence(
 	document.addEventListener("visibilitychange", onVisibilityChange);
 
 	return () => {
+		stopped = true;
 		unsubscribeQuery();
 		unsubscribeMutation();
 		window.removeEventListener("blur", onLeave);
