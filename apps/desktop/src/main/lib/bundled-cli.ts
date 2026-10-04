@@ -163,7 +163,9 @@ async function persistBundledCli(
 		});
 		if ((await readFile(metadataPath, "utf8")) === expected) return cliPath;
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+			console.warn("[bundled-cli] Could not read CLI cache metadata", error);
+		}
 	}
 	await mkdir(cliDir, { recursive: true });
 	const stagingDir = await mkdtemp(path.join(cliDir, ".install-"));
@@ -172,15 +174,19 @@ async function persistBundledCli(
 		await copyFile(bundledCliPath, stagedPath);
 		await chmod(stagedPath, 0o755);
 		await rename(stagedPath, cliPath);
-		const stagedMetadata = path.join(stagingDir, "installed.json");
-		await writeFile(
-			stagedMetadata,
-			JSON.stringify({
-				source: sourceIdentity,
-				installed: await installedIdentity(),
-			}),
-		);
-		await rename(stagedMetadata, metadataPath);
+		try {
+			const stagedMetadata = path.join(stagingDir, "installed.json");
+			await writeFile(
+				stagedMetadata,
+				JSON.stringify({
+					source: sourceIdentity,
+					installed: await installedIdentity(),
+				}),
+			);
+			await rename(stagedMetadata, metadataPath);
+		} catch (error) {
+			console.warn("[bundled-cli] Could not persist CLI cache metadata", error);
+		}
 		return cliPath;
 	} finally {
 		await rm(stagingDir, { recursive: true, force: true });

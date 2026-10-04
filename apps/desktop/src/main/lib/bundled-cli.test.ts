@@ -6,6 +6,7 @@ import {
 	existsSync,
 	mkdirSync,
 	mkdtempSync,
+	readdirSync,
 	readFileSync,
 	rmSync,
 	statSync,
@@ -132,6 +133,31 @@ describe("bundled CLI", () => {
 			expect(
 				readFileSync(path.join(binDir, ".superset-cli", "superset"), "utf8"),
 			).toBe("#!/bin/xx\n");
+		},
+	);
+
+	it.skipIf(process.platform === "win32")(
+		"installs a usable Linux CLI when cache metadata cannot be persisted",
+		async () => {
+			const cliDir = path.join(binDir, ".superset-cli");
+			mkdirSync(path.join(cliDir, "installed.json"), { recursive: true });
+			writeFileSync(bundledCliPath, '#!/bin/sh\nprintf "available\\n"\n');
+			for (let launch = 0; launch < 2; launch++) {
+				expect(
+					await installBundledCliShim({
+						binDir,
+						bundledCliPath,
+						platform: "linux",
+					}),
+				).toBe("installed");
+				expect(
+					readdirSync(cliDir).some((name) => name.startsWith(".install-")),
+				).toBe(false);
+			}
+			rmSync(path.join(tempDir, "resources"), { recursive: true });
+			const result = spawnSync(path.join(binDir, "superset"));
+			expect(result.status).toBe(0);
+			expect(result.stdout.toString()).toBe("available\n");
 		},
 	);
 
