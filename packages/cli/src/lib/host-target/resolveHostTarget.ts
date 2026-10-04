@@ -10,6 +10,7 @@ import SuperJSON from "superjson";
 import type { ApiClient } from "../api-client";
 import { isProcessAlive, readManifest } from "../host/manifest";
 import { getRelayUrl } from "../host/relay-url";
+import { exchangeApiKey } from "./exchangeApiKey";
 import { readJwtSubject } from "./readJwtSubject";
 
 export type HostServiceClient = ReturnType<
@@ -92,6 +93,7 @@ export async function resolveHostTarget(
 	}
 
 	const routingKey = buildHostRoutingKey(options.organizationId, targetHostId);
+	const userJwt = await exchangeApiKey(options.userJwt);
 	const relayUrl = await getRelayUrl(options.api);
 	return {
 		kind: "remote",
@@ -102,7 +104,7 @@ export async function resolveHostTarget(
 					url: `${relayUrl}/hosts/${routingKey}/trpc`,
 					transformer: SuperJSON,
 					headers: {
-						Authorization: `Bearer ${options.userJwt}`,
+						Authorization: `Bearer ${userJwt}`,
 						"x-superset-client-machine-id": localHostId,
 					},
 				}),
@@ -110,7 +112,7 @@ export async function resolveHostTarget(
 		}),
 		ws: {
 			baseWsUrl: `${relayUrl.replace(/^http/, "ws")}/hosts/${routingKey}`,
-			token: options.userJwt,
+			token: userJwt,
 		},
 	};
 }
