@@ -32,6 +32,44 @@ function createRunner(responses: unknown[]) {
 }
 
 describe("conditional GitHub REST requests", () => {
+	test("keeps a newer response when an older revalidation finishes last", async () => {
+		const pending = Promise.withResolvers<unknown>();
+		const { run, calls } = createRunner([
+			response([], '"first"'),
+			pending.promise,
+			response([{ number: 42 }], '"second"'),
+			notModified(),
+		]);
+		const gh = new ConditionalGh(run);
+		await gh.exec(GET);
+		const older = gh.exec(GET);
+		await gh.exec(GET);
+		pending.reject(notModified());
+		await older;
+		expect(await gh.exec(GET)).toEqual([{ number: 42 }]);
+		expect(calls[3]?.args).toContain('If-None-Match: "second"');
+	});
+
+	test.each([
+		200, 304,
+	])("does not restore responses cleared during a pending %i request", async (status) => {
+		const pending = Promise.withResolvers<unknown>();
+		const { run, calls } = createRunner([
+			response([], '"first"'),
+			pending.promise,
+			response([]),
+		]);
+		const gh = new ConditionalGh(run);
+		await gh.exec(GET);
+		const request = gh.exec(GET);
+		gh.clear();
+		if (status === 304) pending.reject(notModified());
+		else pending.resolve(response([], '"second"'));
+		await request;
+		await gh.exec(GET);
+		expect(calls[2]?.args).not.toContain("--header");
+	});
+
 	test("revalidates with weak ETags and handles gh's nonzero 304 exit", async () => {
 		const body = [{ number: 42 }];
 		const { run, calls } = createRunner([

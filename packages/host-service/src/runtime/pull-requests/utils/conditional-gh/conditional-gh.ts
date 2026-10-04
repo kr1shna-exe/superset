@@ -24,6 +24,7 @@ function parseResponse(stdout: unknown) {
 export class ConditionalGh {
 	private readonly cache = new Map<string, CachedResponse>();
 	private bytes = 0;
+	private generation = 0;
 
 	constructor(
 		private readonly run: ExecGh,
@@ -34,6 +35,7 @@ export class ConditionalGh {
 	) {}
 
 	clear() {
+		this.generation++;
 		this.cache.clear();
 		this.bytes = 0;
 	}
@@ -66,6 +68,7 @@ export class ConditionalGh {
 			return this.run(args, options);
 		}
 		const key = JSON.stringify([args, options?.cwd]);
+		const generation = this.generation;
 		const cached = this.cache.get(key);
 		const request = [...args, "--include"];
 		if (cached) request.push("--header", `If-None-Match: ${cached.etag}`);
@@ -85,7 +88,9 @@ export class ConditionalGh {
 			) {
 				raw = error.stdout;
 			} else {
-				this.remove(key);
+				if (generation === this.generation && this.cache.get(key) === cached) {
+					this.remove(key);
+				}
 				throw error;
 			}
 		}
@@ -93,13 +98,16 @@ export class ConditionalGh {
 		const response = parseResponse(raw);
 		if (!response) return raw;
 		if (response.status === 304 && cached) {
-			this.store(key, cached);
+			if (generation === this.generation && this.cache.get(key) === cached) {
+				this.store(key, cached);
+			}
 			return JSON.parse(cached.body);
 		}
 		if (response.status !== 200) {
 			throw new Error(`Unexpected GitHub response: HTTP ${response.status}`);
 		}
 		const result: unknown = JSON.parse(response.body);
+		if (generation !== this.generation) return result;
 		this.remove(key);
 		if (response.etag) {
 			this.store(key, {
