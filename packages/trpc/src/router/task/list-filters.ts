@@ -1,4 +1,4 @@
-import { accounts, tasks } from "@superset/db/schema";
+import { tasks, userIdentities } from "@superset/db/schema";
 import {
 	buildTaskListConditions,
 	InvalidDueDateRangeError,
@@ -45,17 +45,21 @@ export function buildTaskListFilters(
 	});
 
 	if (input?.assigneeMe) {
-		const linearAccountIds = new QueryBuilder()
-			.select({ accountId: accounts.accountId })
-			.from(accounts)
+		const linearIdentityIds = new QueryBuilder()
+			.select({ externalId: userIdentities.externalId })
+			.from(userIdentities)
 			.where(
-				and(eq(accounts.userId, userId), eq(accounts.providerId, "linear")),
+				and(
+					eq(userIdentities.organizationId, organizationId),
+					eq(userIdentities.userId, userId),
+					eq(userIdentities.provider, "linear"),
+				),
 			);
 		const assigneeFilter = or(
 			eq(tasks.assigneeId, userId),
 			and(
 				eq(tasks.externalProvider, "linear"),
-				inArray(tasks.assigneeExternalId, linearAccountIds),
+				inArray(tasks.assigneeExternalId, linearIdentityIds),
 			),
 		);
 		if (assigneeFilter) filters.push(assigneeFilter);

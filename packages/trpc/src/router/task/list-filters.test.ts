@@ -26,22 +26,25 @@ beforeEach(() => {
 	db.exec(`
 		ATTACH DATABASE ':memory:' AS auth;
 		CREATE TABLE auth.accounts (user_id TEXT, provider_id TEXT, account_id TEXT);
+		CREATE TABLE user_identities (user_id TEXT, organization_id TEXT, provider TEXT, external_id TEXT, external_scope_id TEXT);
 		CREATE TABLE tasks (
 			id TEXT, organization_id TEXT, deleted_at TEXT, assignee_id TEXT,
 			external_provider TEXT, assignee_external_id TEXT, status_id TEXT
 		);
-		INSERT INTO auth.accounts VALUES
-			('me', 'linear', 'linear-me'),
-			('me', 'linear', 'linear-me'),
-			('me', 'linear', 'linear-me-second'),
-			('me', 'google', 'google-me'),
-			('other', 'linear', 'linear-other');
+		INSERT INTO user_identities VALUES
+			('me', 'org', 'linear', 'linear-me', 'workspace'),
+			('me', 'org', 'linear', 'linear-me', 'second-workspace'),
+			('me', 'org', 'linear', 'linear-me-second', 'workspace'),
+			('me', 'org', 'google', 'google-me', NULL),
+			('me', 'another-org', 'linear', 'linear-other-org', 'workspace'),
+			('other', 'org', 'linear', 'linear-other', 'workspace');
 		INSERT INTO tasks VALUES
 			('native', 'org', NULL, 'me', NULL, NULL, 'started'),
 			('linear', 'org', NULL, NULL, 'linear', 'linear-me', 'started'),
 			('second', 'org', NULL, NULL, 'linear', 'linear-me-second', 'backlog'),
 			('other-user', 'org', NULL, 'other', 'linear', 'linear-other', 'started'),
 			('other-org', 'another-org', NULL, NULL, 'linear', 'linear-me', 'started'),
+			('identity-other-org', 'org', NULL, NULL, 'linear', 'linear-other-org', 'started'),
 			('deleted', 'org', '2026-01-01', NULL, 'linear', 'linear-me', 'started'),
 			('other-provider', 'org', NULL, NULL, 'github', 'linear-me', 'started'),
 			('other-account', 'org', NULL, NULL, 'linear', 'google-me', 'started'),
@@ -77,12 +80,13 @@ describe("buildTaskListFilters", () => {
 	});
 
 	test("keeps native assignments when no Linear identity is linked", () => {
-		db.run("DELETE FROM auth.accounts WHERE user_id = ?", ["me"]);
+		db.run("DELETE FROM user_identities WHERE user_id = ?", ["me"]);
 		expect(list({ assigneeMe: true })).toEqual(["native"]);
 	});
 
 	test("does not filter by the caller when assigneeMe is false or omitted", () => {
 		const expected = [
+			"identity-other-org",
 			"linear",
 			"native",
 			"other-account",
