@@ -8,7 +8,7 @@ import {
 	focusManager,
 	QueryClient,
 } from "@tanstack/react-query";
-import { PersistQueryClientProvider } from "@tanstack/react-query-persist-client";
+import type { PersistQueryClientOptions } from "@tanstack/react-query-persist-client";
 import { del, get, set } from "idb-keyval";
 import {
 	CLOUD_TRPC_ROUTER_ROOTS,
@@ -22,6 +22,7 @@ import {
 } from "renderer/lib/host-service-client";
 import superjson from "superjson";
 import { electronReactClient } from "../../lib/trpc-client";
+import { QueryPersistenceProvider } from "./components/QueryPersistenceProvider";
 
 // In Electron, blurring the BrowserWindow keeps document.visibilityState
 // "visible", so React Query's default visibilitychange listener never fires.
@@ -83,6 +84,7 @@ const persister = createAsyncStoragePersister({
 		},
 	},
 	key: "superset-rq-cache",
+	throttleTime: 0,
 	// Query data carries Dates (tRPC's superjson transformer); plain JSON would
 	// restore them as strings.
 	serialize: superjson.stringify,
@@ -102,6 +104,20 @@ const PERSIST_KEY_PREFIXES = new Set([
 // and the cloud workspace list, so the Cloud section draws before it does.
 const PERSIST_TRPC_PATHS = new Set(["host.roster", "cloudWorkspace.list"]);
 
+const persistOptions: Omit<PersistQueryClientOptions, "queryClient"> = {
+	persister,
+	maxAge: 24 * 60 * 60 * 1000,
+	buster: PERSIST_BUSTER,
+	dehydrateOptions: {
+		shouldDehydrateQuery: (query) => {
+			if (!defaultShouldDehydrateQuery(query)) return false;
+			const head = query.queryKey[0];
+			if (typeof head === "string") return PERSIST_KEY_PREFIXES.has(head);
+			return Array.isArray(head) && PERSIST_TRPC_PATHS.has(head.join("."));
+		},
+	},
+};
+
 export function ElectronTRPCProvider({
 	children,
 }: {
@@ -113,30 +129,14 @@ export function ElectronTRPCProvider({
 			queryClient={queryClient}
 		>
 			<cloudTrpc.Provider client={cloudTrpcClient} queryClient={queryClient}>
-				<PersistQueryClientProvider
+				<QueryPersistenceProvider
 					client={queryClient}
-					persistOptions={{
-						persister,
-						maxAge: 24 * 60 * 60 * 1000, // 24h
-						buster: PERSIST_BUSTER,
-						dehydrateOptions: {
-							shouldDehydrateQuery: (query) => {
-								if (!defaultShouldDehydrateQuery(query)) return false;
-								const head = query.queryKey[0];
-								if (typeof head === "string") {
-									return PERSIST_KEY_PREFIXES.has(head);
-								}
-								return (
-									Array.isArray(head) && PERSIST_TRPC_PATHS.has(head.join("."))
-								);
-							},
-						},
-					}}
+					persistOptions={persistOptions}
 				>
 					<CloudClientProvider client={cloudTrpcClient}>
 						{children}
 					</CloudClientProvider>
-				</PersistQueryClientProvider>
+				</QueryPersistenceProvider>
 			</cloudTrpc.Provider>
 		</electronTrpc.Provider>
 	);
