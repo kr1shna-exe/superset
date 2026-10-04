@@ -8,6 +8,7 @@ import {
 	unlinkSync,
 	writeFileSync,
 } from "node:fs";
+import { chmod, copyFile, mkdir, mkdtemp, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { getBinDir } from "@superset/agent-setup/paths";
 import { app } from "electron";
@@ -122,9 +123,28 @@ function shouldReplaceShim(shimPath: string): boolean {
 	}
 }
 
-export function installBundledCliShim(
+async function persistBundledCli(
+	binDir: string,
+	bundledCliPath: string,
+): Promise<string> {
+	const cliDir = path.join(binDir, ".superset-cli");
+	await mkdir(cliDir, { recursive: true });
+	const stagingDir = await mkdtemp(path.join(cliDir, ".install-"));
+	const cliPath = path.join(cliDir, "superset");
+	try {
+		const stagedPath = path.join(stagingDir, "superset");
+		await copyFile(bundledCliPath, stagedPath);
+		await chmod(stagedPath, 0o755);
+		await rename(stagedPath, cliPath);
+		return cliPath;
+	} finally {
+		await rm(stagingDir, { recursive: true, force: true });
+	}
+}
+
+export async function installBundledCliShim(
 	options: InstallBundledCliShimOptions = {},
-): BundledCliInstallStatus {
+): Promise<BundledCliInstallStatus> {
 	const platform = options.platform ?? process.platform;
 	const bundledCliPath =
 		options.bundledCliPath ?? resolveBundledCliPath(platform);
@@ -144,10 +164,14 @@ export function installBundledCliShim(
 	}
 
 	mkdirSync(binDir, { recursive: true });
+	const installedCliPath =
+		platform === "linux"
+			? await persistBundledCli(binDir, bundledCliPath)
+			: bundledCliPath;
 	if (existsSync(shimPath)) {
 		unlinkSync(shimPath);
 	}
-	writeFileSync(shimPath, buildBundledCliShim(bundledCliPath, platform), {
+	writeFileSync(shimPath, buildBundledCliShim(installedCliPath, platform), {
 		mode: platform === "win32" ? 0o644 : 0o755,
 	});
 

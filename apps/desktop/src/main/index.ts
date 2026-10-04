@@ -598,7 +598,7 @@ if (!gotTheLock) {
 			console.error("[main] Failed to sync installed plugins:", error);
 		}
 		try {
-			installBundledCliShim();
+			await installBundledCliShim();
 		} catch (error) {
 			console.error("[main] Failed to install bundled CLI shim:", error);
 		}
