@@ -8,6 +8,7 @@ import { getHostEventBus } from "renderer/lib/host-event-bus";
 import { getHostServiceClientByUrl } from "renderer/lib/host-service-client";
 import { useLocalHostService } from "renderer/routes/_authenticated/providers/LocalHostServiceProvider";
 import { useSandboxAccess } from "renderer/routes/_authenticated/providers/SandboxAccessProvider";
+import { usePruneArchivedWorkspaceState } from "./hooks/usePruneArchivedWorkspaceState";
 import {
 	applyWorkspaceChangedEvent,
 	deriveHostWorkspacesQueryTargets,
@@ -144,6 +145,8 @@ export function useHostWorkspacesSource(
 		openSandbox,
 		scopedHostId,
 	]);
+
+	usePruneArchivedWorkspaceState(targets, scopedHostId === undefined);
 
 	// Last-seen snapshots hydrate once per (org, host); live data always wins.
 	const [snapshots, setSnapshots] = useState<Map<string, HostWorkspaceRow[]>>(

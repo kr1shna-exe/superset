@@ -45,6 +45,10 @@ import { removeDirectoryTree } from "./remove-directory-tree";
  */
 const destroysInFlight = new Set<string>();
 
+export function isWorkspaceDestroyInFlight(workspaceId: string): boolean {
+	return destroysInFlight.has(workspaceId);
+}
+
 /** @internal — exposed for tests to introspect / clear the guard. */
 export const __testDestroysInFlight = destroysInFlight;
 

@@ -1,8 +1,8 @@
-import { existsSync } from "node:fs";
+import { existsSync, lstatSync } from "node:fs";
 import { basename } from "node:path";
 import { workspaceTagsInputSchema } from "@superset/shared/workspace-tags";
 import { TRPCError } from "@trpc/server";
-import { eq, isNotNull, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { projects, workspaces } from "../../../db/schema";
 import {
@@ -14,9 +14,42 @@ import {
 import { cancelAndWaitWorkspaceTitleCommit } from "../../../workspaces/workspace-title-jobs";
 import { protectedProcedure, router } from "../../index";
 import { resolveWorktreePath } from "../git/utils/resolve-worktree";
-import { destroyWorkspace } from "../workspace-cleanup";
+import {
+	destroyWorkspace,
+	isWorkspaceDestroyInFlight,
+} from "../workspace-cleanup";
 
 export const workspaceRouter = router({
+	getArchivedIds: protectedProcedure
+		.input(z.object({ workspaceIds: z.array(z.string()).max(500) }))
+		.query(({ ctx, input }) => {
+			if (input.workspaceIds.length === 0) return [];
+			return ctx.db
+				.select({ id: workspaces.id, worktreePath: workspaces.worktreePath })
+				.from(workspaces)
+				.leftJoin(projects, eq(projects.id, workspaces.projectId))
+				.where(
+					and(
+						inArray(workspaces.id, input.workspaceIds),
+						isNotNull(workspaces.archivedAt),
+						inArray(workspaces.archiveReason, ["deleted", "merged"]),
+						isNull(projects.deletedAt),
+					),
+				)
+				.all()
+				.filter(({ id }) => !isWorkspaceDestroyInFlight(id))
+				.filter(({ worktreePath }) => {
+					try {
+						return (
+							lstatSync(worktreePath, { throwIfNoEntry: false }) === undefined
+						);
+					} catch {
+						return false;
+					}
+				})
+				.map(({ id }) => id);
+		}),
+
 	get: protectedProcedure
 		.input(z.object({ id: z.string() }))
 		.query(({ ctx, input }) => {
