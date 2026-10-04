@@ -1,4 +1,4 @@
-import { existsSync, lstatSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { basename } from "node:path";
 import { workspaceTagsInputSchema } from "@superset/shared/workspace-tags";
 import { TRPCError } from "@trpc/server";
@@ -18,14 +18,21 @@ import {
 	destroyWorkspace,
 	isWorkspaceDestroyInFlight,
 } from "../workspace-cleanup";
+import { sharesProjectCheckout } from "../workspace-cleanup/is-local-checkout-workspace";
+import { isMissingPath } from "../workspace-cleanup/is-missing-path";
 
 export const workspaceRouter = router({
 	getArchivedIds: protectedProcedure
 		.input(z.object({ workspaceIds: z.array(z.string()).max(500) }))
-		.query(({ ctx, input }) => {
+		.query(async ({ ctx, input }) => {
 			if (input.workspaceIds.length === 0) return [];
-			return ctx.db
-				.select({ id: workspaces.id, worktreePath: workspaces.worktreePath })
+			const candidates = ctx.db
+				.select({
+					id: workspaces.id,
+					worktreePath: workspaces.worktreePath,
+					type: workspaces.type,
+					repoPath: projects.repoPath,
+				})
 				.from(workspaces)
 				.leftJoin(projects, eq(projects.id, workspaces.projectId))
 				.where(
@@ -36,17 +43,33 @@ export const workspaceRouter = router({
 						isNull(projects.deletedAt),
 					),
 				)
+				.all();
+			const archivedIds: string[] = [];
+			for (const candidate of candidates) {
+				if (isWorkspaceDestroyInFlight(candidate.id)) continue;
+				const removable =
+					(await isMissingPath(candidate.worktreePath)) ||
+					(await sharesProjectCheckout(
+						candidate,
+						candidate.repoPath ? { repoPath: candidate.repoPath } : undefined,
+					));
+				if (removable) archivedIds.push(candidate.id);
+			}
+			if (archivedIds.length === 0) return [];
+			return ctx.db
+				.select({ id: workspaces.id })
+				.from(workspaces)
+				.leftJoin(projects, eq(projects.id, workspaces.projectId))
+				.where(
+					and(
+						inArray(workspaces.id, archivedIds),
+						isNotNull(workspaces.archivedAt),
+						inArray(workspaces.archiveReason, ["deleted", "merged"]),
+						isNull(projects.deletedAt),
+					),
+				)
 				.all()
 				.filter(({ id }) => !isWorkspaceDestroyInFlight(id))
-				.filter(({ worktreePath }) => {
-					try {
-						return (
-							lstatSync(worktreePath, { throwIfNoEntry: false }) === undefined
-						);
-					} catch {
-						return false;
-					}
-				})
 				.map(({ id }) => id);
 		}),
 

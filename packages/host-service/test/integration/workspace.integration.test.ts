@@ -200,10 +200,15 @@ describe("workspace list archive semantics", () => {
 	});
 
 	test("getArchivedIds preserves recoverable project and interrupted-delete layouts", async () => {
-		archiveLocalWorkspace(storeCtx(), scenario.workspaceId, "deleted");
+		const { id: interruptedId } = seedWorkspace(scenario.host, {
+			projectId: scenario.projectId,
+			worktreePath: join(scenario.repo.repoPath, ".git"),
+			branch: "feature/interrupted",
+		});
+		archiveLocalWorkspace(storeCtx(), interruptedId, "deleted");
 		expect(
 			await scenario.host.trpc.workspace.getArchivedIds.query({
-				workspaceIds: [scenario.workspaceId],
+				workspaceIds: [interruptedId],
 			}),
 		).toEqual([]);
 		const { id } = seedWorkspace(scenario.host, {
@@ -222,5 +227,36 @@ describe("workspace list archive semantics", () => {
 				workspaceIds: [id],
 			}),
 		).toEqual([]);
+	});
+
+	test("getArchivedIds confirms archived shared checkouts while preserving live and in-flight rows", async () => {
+		const input = { workspaceIds: [scenario.workspaceId] };
+		expect(
+			await scenario.host.trpc.workspace.getArchivedIds.query(input),
+		).toEqual([]);
+		archiveLocalWorkspace(storeCtx(), scenario.workspaceId, "deleted");
+		__testDestroysInFlight.add(scenario.workspaceId);
+		try {
+			expect(
+				await scenario.host.trpc.workspace.getArchivedIds.query(input),
+			).toEqual([]);
+		} finally {
+			__testDestroysInFlight.delete(scenario.workspaceId);
+		}
+		unarchiveLocalWorkspace(storeCtx(), scenario.workspaceId);
+		const deletion = await scenario.host.trpc.workspaceCleanup.destroy.mutate({
+			workspaceId: scenario.workspaceId,
+		});
+		expect(deletion.success).toBe(true);
+		expect(
+			await scenario.host.trpc.workspace.getArchivedIds.query(input),
+		).toEqual([scenario.workspaceId]);
+		expect(
+			(
+				await scenario.host.trpc.workspace.get.query({
+					id: scenario.workspaceId,
+				})
+			).worktreeExists,
+		).toBe(true);
 	});
 });

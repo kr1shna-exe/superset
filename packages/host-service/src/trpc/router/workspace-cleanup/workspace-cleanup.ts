@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, statSync } from "node:fs";
+import { existsSync, statSync } from "node:fs";
 import { rm } from "node:fs/promises";
 import { sanitizePromptForPty } from "@superset/shared/agent-prompt-launch";
 import { TRPCError } from "@trpc/server";
@@ -31,6 +31,7 @@ import { isInsideSessionsRoot } from "../workspace-creation/shared/session-paths
 import { isInsideProjectWorktreesRoot } from "../workspace-creation/shared/worktree-paths";
 import { cleanupGitOps, isIndeterminateGitTaskFailure } from "./git-ops";
 import { isLocalCheckoutWorkspace } from "./is-local-checkout-workspace";
+import { isMissingPath } from "./is-missing-path";
 import { removeDirectoryTree } from "./remove-directory-tree";
 
 /**
@@ -392,16 +393,6 @@ function isMissingDirectory(path: string): boolean {
 	}
 }
 
-/** Like isMissingDirectory, but does not follow a final symlink: a dangling
- * link at the worktree path is still an entry to remove, not an absence. */
-function isMissingPath(path: string): boolean {
-	try {
-		return lstatSync(path, { throwIfNoEntry: false }) === undefined;
-	} catch {
-		return false;
-	}
-}
-
 function archiveReasonFor(
 	ctx: HostServiceContext,
 	local: { pullRequestId: string | null },
@@ -579,7 +570,7 @@ async function runDestroyPhases(
 					}`,
 				});
 			}
-			if (!isMissingPath(local.worktreePath)) {
+			if (!(await isMissingPath(local.worktreePath))) {
 				// Unregistered is not removed: git's unregistration and its
 				// recursive delete are not atomic, so `remove --force --force`
 				// can drop the registration and still fail partway through
@@ -620,7 +611,7 @@ async function runDestroyPhases(
 			// rather than `existsSync`: a leftover this process cannot read,
 			// or a dangling symlink, still exists and must not be reported
 			// as removed.
-			worktreeRemoved = isMissingPath(local.worktreePath);
+			worktreeRemoved = await isMissingPath(local.worktreePath);
 		}
 	}
 

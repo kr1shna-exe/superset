@@ -99,7 +99,7 @@ export interface UseHostWorkspacesResult {
  */
 export function useHostWorkspacesSource(
 	scopedHostId?: string | null,
-	options?: { includeArchived?: boolean },
+	options?: { includeArchived?: boolean; pruneArchivedState?: boolean },
 ): UseHostWorkspacesResult {
 	const includeArchived = options?.includeArchived ?? false;
 	const queryClient = useQueryClient();
@@ -146,7 +146,7 @@ export function useHostWorkspacesSource(
 		scopedHostId,
 	]);
 
-	usePruneArchivedWorkspaceState(targets, scopedHostId === undefined);
+	usePruneArchivedWorkspaceState(targets, options?.pruneArchivedState ?? false);
 
 	// Last-seen snapshots hydrate once per (org, host); live data always wins.
 	const [snapshots, setSnapshots] = useState<Map<string, HostWorkspaceRow[]>>(
