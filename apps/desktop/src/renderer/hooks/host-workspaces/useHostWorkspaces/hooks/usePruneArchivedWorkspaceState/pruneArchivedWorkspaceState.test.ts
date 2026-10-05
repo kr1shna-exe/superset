@@ -12,6 +12,7 @@ import { pruneArchivedWorkspaceState } from "./pruneArchivedWorkspaceState";
 function fixture(count = 3) {
 	let persisted = "";
 	let writes = 0;
+	let writeError: Error | undefined;
 	const collection = createCollection(
 		localStorageCollectionOptions({
 			id: crypto.randomUUID(),
@@ -23,6 +24,7 @@ function fixture(count = 3) {
 			storage: {
 				getItem: () => persisted || null,
 				setItem: (_key, value) => {
+					if (writeError) throw writeError;
 					persisted = value;
 					writes++;
 				},
@@ -55,10 +57,35 @@ function fixture(count = 3) {
 		},
 		persisted: () => persisted,
 		writes: () => writes,
+		failWrites: (error: Error) => {
+			writeError = error;
+		},
 	};
 }
 
 describe("archived workspace local state", () => {
+	it("preserves runtimes when a failed persisted deletion rolls back", async () => {
+		const f = fixture();
+		const persistedBefore = f.persisted();
+		const cleaned: string[] = [];
+		f.failWrites(new Error("storage unavailable"));
+		try {
+			await expect(
+				pruneArchivedWorkspaceState({
+					...f.options,
+					getArchivedIds: async (ids) => ids,
+					cleanupRuntimes: (rows) =>
+						cleaned.push(...rows.map((row) => row.workspaceId)),
+				}),
+			).rejects.toThrow("storage unavailable");
+			expect(f.collection.state.size).toBe(3);
+			expect(f.persisted()).toBe(persistedBefore);
+			expect(cleaned).toEqual([]);
+		} finally {
+			await f.collection.cleanup();
+		}
+	});
+
 	it("prunes only confirmed IDs in one persisted write across request batches", async () => {
 		const f = fixture(502);
 		const ids = f.rows.map((row) => row.workspaceId);

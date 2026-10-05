@@ -30,9 +30,9 @@ export async function pruneArchivedWorkspaceState({
 			collection.get(row.workspaceId) === row,
 	);
 	if (removableRows.length > 0) {
-		cleanupRuntimes(removableRows);
 		await collection.delete(removableRows.map((row) => row.workspaceId))
 			.isPersisted.promise;
+		cleanupRuntimes(removableRows);
 	}
 	return removableRows.length;
 }
