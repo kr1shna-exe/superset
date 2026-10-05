@@ -4,11 +4,13 @@ import { fileURLToPath } from "node:url";
 import { CLIError } from "@superset/cli-framework";
 import { env } from "../env";
 import {
+	connectionWasRefused,
 	type ProxyManifest,
 	proxyDirectory,
-	proxyIsLive,
+	proxyHealth,
+	proxyIsGone,
 	proxyManifest,
-	proxyProcessIsAlive,
+	proxyProcessState,
 	readProxy,
 	removeProxy,
 	tryProxyLock,
@@ -162,8 +164,13 @@ export async function ensureCdpProxy(options: CdpProxyOptions) {
 	const release = await lockProxy(id);
 	try {
 		const existing = readProxy(id);
-		const live = existing && (await proxyIsLive(existing));
-		if (existing && !live && (await proxyProcessIsAlive(existing)))
+		const health = existing && (await proxyHealth(existing));
+		const live = health === "live";
+		if (
+			existing &&
+			!live &&
+			!(await proxyIsGone(existing, health ?? undefined))
+		)
 			throw new CLIError(
 				"The existing CDP proxy is not responding",
 				`Retry or stop it with: superset browser cdp-stop --id ${id}`,
@@ -185,17 +192,44 @@ export async function stopCdpProxy(id: string): Promise<boolean> {
 	try {
 		const manifest = readProxy(id);
 		if (!manifest) return false;
-		if (await proxyProcessIsAlive(manifest)) {
-			const response = await fetch(`${manifest.endpoint}/stop`, {
-				method: "POST",
-				headers: { Authorization: `Bearer ${manifest.stopToken}` },
-				signal: AbortSignal.timeout(1000),
-				redirect: "error",
-			});
-			if (!response.ok)
+		const processState = await proxyProcessState(manifest);
+		if (processState === "unknown") {
+			const health = await proxyHealth(manifest);
+			if (health === "refused") {
+				removeProxy(manifest);
+				return true;
+			}
+			if (health !== "live")
+				throw new CLIError(
+					"Could not verify the local CDP proxy",
+					"The proxy may still be running. Retry the stop command",
+				);
+		}
+		if (processState !== "gone") {
+			let response: Response | undefined;
+			try {
+				response = await fetch(`${manifest.endpoint}/stop`, {
+					method: "POST",
+					headers: { Authorization: `Bearer ${manifest.stopToken}` },
+					signal: AbortSignal.timeout(1000),
+					redirect: "error",
+				});
+			} catch (error) {
+				if (
+					!(await proxyIsGone(
+						manifest,
+						connectionWasRefused(error) ? "refused" : "unknown",
+					))
+				)
+					throw new CLIError(
+						"Could not stop the local CDP proxy",
+						"The proxy may still be running. Retry the stop command",
+					);
+			}
+			if (response && !response.ok)
 				throw new CLIError("Could not stop the local CDP proxy");
 			const deadline = Date.now() + 2000;
-			while (await proxyProcessIsAlive(manifest)) {
+			while (response && !(await proxyIsGone(manifest))) {
 				if (Date.now() >= deadline)
 					throw new CLIError(
 						"The CDP proxy has not stopped yet",

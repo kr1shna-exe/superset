@@ -153,6 +153,13 @@ test.each(
 			expect(await stop.exited).toBe(0);
 			await expect(fetch(`${manifest.endpoint}/health`)).rejects.toThrow();
 		});
+		const warning = await new Response(child.stderr).text();
+		if (launcher.direct) expect(parsed.message).toBe(result.data.url);
+		expect(warning).toContain("Treat it as a secret");
+		expect(warning).toContain(`superset browser cdp-stop --id ${manifest.id}`);
+		expect(warning).not.toContain(manifest.token);
+		expect(warning).not.toContain(result.data.url);
+		expect(warning).not.toContain(["sk", "test", "cdp", "fixture"].join("_"));
 		expect(statSync(manifestPath).mode & 0o777).toBe(0o600);
 		expect(readFileSync(manifestPath, "utf8")).not.toContain(
 			["sk", "test", "cdp", "fixture"].join("_"),

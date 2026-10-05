@@ -93,10 +93,27 @@ export function writeProxy(manifest: ProxyManifest) {
 export async function proxyProcessIsAlive(
 	manifest: ProxyManifest,
 ): Promise<boolean> {
-	if (!isProcessAlive(manifest.pid)) return false;
+	return (await proxyProcessState(manifest)) !== "gone";
+}
+
+export async function proxyProcessState(
+	manifest: ProxyManifest,
+): Promise<"owned" | "gone" | "unknown"> {
+	if (!isProcessAlive(manifest.pid)) return "gone";
 	const command = await inspectProcessCommand(manifest.pid);
+	if (command === null) return "unknown";
+	return command.includes(`--instance ${manifest.instance}`) ? "owned" : "gone";
+}
+
+export async function proxyIsGone(
+	manifest: ProxyManifest,
+	health?: ProxyHealth,
+): Promise<boolean> {
+	const processState = await proxyProcessState(manifest);
+	if (processState === "gone") return true;
 	return (
-		command === null || command.includes(`--instance ${manifest.instance}`)
+		processState === "unknown" &&
+		(health ?? (await proxyHealth(manifest))) === "refused"
 	);
 }
 
@@ -106,7 +123,23 @@ export function removeProxy(manifest: ProxyManifest) {
 		unlinkSync(join(proxyDirectory, `${manifest.id}.json`));
 }
 
-export async function proxyIsLive(manifest: ProxyManifest): Promise<boolean> {
+type ProxyHealth = "live" | "refused" | "unknown";
+
+export function connectionWasRefused(error: unknown): boolean {
+	if (typeof error !== "object" || error === null) return false;
+	const code = "code" in error ? error.code : undefined;
+	return (
+		code === "ConnectionRefused" ||
+		code === "ECONNREFUSED" ||
+		("cause" in error &&
+			error.cause !== error &&
+			connectionWasRefused(error.cause))
+	);
+}
+
+export async function proxyHealth(
+	manifest: ProxyManifest,
+): Promise<ProxyHealth> {
 	try {
 		const response = await fetch(`${manifest.endpoint}/health`, {
 			headers: { Authorization: `Bearer ${manifest.stopToken}` },
@@ -114,8 +147,10 @@ export async function proxyIsLive(manifest: ProxyManifest): Promise<boolean> {
 			redirect: "error",
 		});
 		const body = (await response.json()) as { id?: string; pid?: number };
-		return response.ok && body.id === manifest.id && body.pid === manifest.pid;
-	} catch {
-		return false;
+		return response.ok && body.id === manifest.id && body.pid === manifest.pid
+			? "live"
+			: "unknown";
+	} catch (error) {
+		return connectionWasRefused(error) ? "refused" : "unknown";
 	}
 }

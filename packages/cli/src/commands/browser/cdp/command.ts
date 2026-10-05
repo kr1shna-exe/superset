@@ -42,6 +42,9 @@ export default command({
 				paneId: options.pane,
 				upstreamUrl: endpoint,
 			});
+			process.stderr.write(
+				`This local URL grants CDP control of the pane. Treat it as a secret.\nStop the proxy with: superset browser cdp-stop --id ${proxy.proxyId}\n`,
+			);
 			return {
 				data: proxy,
 				message: proxy.url,
