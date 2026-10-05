@@ -15,7 +15,10 @@ export function cleanupWorkspacePaneRuntimes(rows: PaneLifecycleRow[]): void {
 	for (const [paneId, terminalId] of getTerminalRuntimeInstances(rows)) {
 		terminalRuntimeRegistry.release(terminalId, paneId);
 	}
-	for (const browserId of extractPaneIds(rows, getBrowserRuntimeId)) {
-		browserRuntimeRegistry.destroy(browserId);
+	for (const row of rows) {
+		if (typeof row.workspaceId !== "string") continue;
+		for (const browserId of extractPaneIds([row], getBrowserRuntimeId)) {
+			browserRuntimeRegistry.destroy(browserId, row.workspaceId);
+		}
 	}
 }

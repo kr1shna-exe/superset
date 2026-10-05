@@ -2,7 +2,7 @@ import type { WorkspaceState } from "@superset/panes";
 import type { PaneLifecycleRow } from "renderer/routes/_authenticated/components/utils/paneLifecycleRows";
 
 export function getTerminalRuntimeInstances(rows: PaneLifecycleRow[]) {
-	const instances = new Map<string, string>();
+	const instances: [paneId: string, terminalId: string][] = [];
 	for (const row of rows) {
 		const layout = row.paneLayout as WorkspaceState<unknown> | undefined;
 		for (const tab of layout?.tabs ?? []) {
@@ -15,7 +15,7 @@ export function getTerminalRuntimeInstances(rows: PaneLifecycleRow[]) {
 					continue;
 				const data = pane.data as { terminalId?: unknown };
 				if (typeof data.terminalId === "string")
-					instances.set(pane.id, data.terminalId);
+					instances.push([pane.id, data.terminalId]);
 			}
 		}
 	}

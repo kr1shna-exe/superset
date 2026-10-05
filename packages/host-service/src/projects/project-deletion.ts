@@ -1,4 +1,5 @@
 import { existsSync } from "node:fs";
+import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
 	projects,
@@ -11,7 +12,11 @@ import {
 import { runTeardown } from "../runtime/teardown";
 import { disposeSessionsByWorkspaceId } from "../terminal/terminal";
 import { cleanupGitOps } from "../trpc/router/workspace-cleanup/git-ops";
-import { isLocalCheckoutWorkspace } from "../trpc/router/workspace-cleanup/is-local-checkout-workspace";
+import {
+	isLocalCheckoutWorkspace,
+	sharesProjectCheckout,
+} from "../trpc/router/workspace-cleanup/is-local-checkout-workspace";
+import { isMissingPath } from "../trpc/router/workspace-cleanup/is-missing-path";
 import type { HostServiceContext } from "../types";
 import {
 	archiveLocalWorkspace,
@@ -28,6 +33,9 @@ type ProjectDeletionContext = Pick<
 	"db" | "eventBus" | "api" | "credentials" | "organizationId"
 > &
 	Partial<Pick<HostServiceContext, "clientMachineId" | "userId">>;
+
+// All project entrypoints for a host share its database instance.
+const purgesInFlight = new WeakMap<ProjectDeletionContext["db"], Set<string>>();
 
 /**
  * Hide the project and every live workspace in it for everyone on this
@@ -140,6 +148,12 @@ export function restoreProject(
 	ctx: ProjectDeletionContext,
 	projectId: string,
 ): { restoredWorkspaceCount: number } | null {
+	if (purgesInFlight.get(ctx.db)?.has(projectId)) {
+		throw new TRPCError({
+			code: "CONFLICT",
+			message: "Project deletion is in progress",
+		});
+	}
 	const project = getLocalProject(ctx.db, projectId);
 	if (!project) return null;
 	if (project.deletedAt == null) return { restoredWorkspaceCount: 0 };
@@ -180,7 +194,7 @@ export function listDeletedProjects(ctx: Pick<ProjectDeletionContext, "db">) {
 
 /**
  * Permanently remove projects deleted longer ago than the restore window.
- * Clean worktrees are removed; git refuses dirty ones, which stay on disk.
+ * Clean worktrees are removed; projects with remaining worktrees stay retryable.
  * The repository folder is never removed.
  */
 export async function purgeExpiredProjects(
@@ -217,21 +231,46 @@ async function purgeProject(
 	ctx: ProjectDeletionContext,
 	project: typeof projects.$inferSelect,
 ): Promise<boolean> {
+	let pending = purgesInFlight.get(ctx.db);
+	if (!pending) {
+		pending = new Set();
+		purgesInFlight.set(ctx.db, pending);
+	}
+	if (pending.has(project.id)) return false;
+	const current = getLocalProject(ctx.db, project.id);
+	if (
+		!current ||
+		current.deletedAt == null ||
+		current.deletedAt !== project.deletedAt
+	)
+		return false;
+	pending.add(project.id);
+	try {
+		return await runPurgeProject(ctx, project);
+	} finally {
+		pending.delete(project.id);
+	}
+}
+
+async function runPurgeProject(
+	ctx: ProjectDeletionContext,
+	project: typeof projects.$inferSelect,
+): Promise<boolean> {
 	const rows = ctx.db
 		.select()
 		.from(workspaces)
 		.where(eq(workspaces.projectId, project.id))
 		.all();
-	const worktrees = rows.filter(
-		(row) =>
-			row.type !== "local" &&
-			row.worktreePath !== project.repoPath &&
-			existsSync(row.worktreePath),
-	);
+	const originalRows = new Map(rows.map((row) => [row.id, row]));
+	const worktrees: typeof rows = [];
+	for (const row of rows) {
+		if (!(await sharesProjectCheckout(row, project))) worktrees.push(row);
+	}
 	if (worktrees.length > 0) {
 		try {
 			const gitEnv = await cleanupGitOps.resolveGitEnv(ctx, project.repoPath);
 			for (const row of worktrees) {
+				if (await isMissingPath(row.worktreePath)) continue;
 				const { stillRegistered, removeError } =
 					await cleanupGitOps.removeWorktree({
 						repoPath: project.repoPath,
@@ -254,6 +293,10 @@ async function purgeProject(
 			});
 		}
 	}
+	// A failed or partial cleanup must retain the records needed for a retry.
+	for (const row of worktrees) {
+		if (!(await isMissingPath(row.worktreePath))) return false;
+	}
 	const purged = ctx.db.transaction((tx) => {
 		const current = tx
 			.select({ deletedAt: projects.deletedAt })
@@ -261,6 +304,27 @@ async function purgeProject(
 			.where(eq(projects.id, project.id))
 			.get();
 		if (!current || current.deletedAt !== project.deletedAt) return false;
+		const currentRows = tx
+			.select()
+			.from(workspaces)
+			.where(eq(workspaces.projectId, project.id))
+			.all();
+		// Creation or cleanup rollback may have finished while Git was running.
+		// Keep their records for a retry rather than confirming unexamined state.
+		if (
+			currentRows.length !== rows.length ||
+			currentRows.some((row) => {
+				const original = originalRows.get(row.id);
+				return (
+					!original ||
+					original.worktreePath !== row.worktreePath ||
+					original.type !== row.type ||
+					original.archivedAt !== row.archivedAt ||
+					original.archiveReason !== row.archiveReason
+				);
+			})
+		)
+			return false;
 		const purgedAt = Date.now();
 		tx.insert(workspacePurgeTombstones)
 			.select(

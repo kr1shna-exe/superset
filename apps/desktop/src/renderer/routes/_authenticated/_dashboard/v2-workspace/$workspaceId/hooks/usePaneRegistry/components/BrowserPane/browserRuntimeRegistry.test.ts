@@ -5,6 +5,7 @@ const unregister = mock(async () => ({ success: true }));
 
 mock.module("renderer/lib/trpc-client", () => ({
 	electronTrpcClient: {
+		keyboardLayout: { changes: { subscribe: () => {} } },
 		browser: {
 			register: { mutate: register },
 			unregister: { mutate: unregister },
@@ -22,6 +23,41 @@ mock.module("renderer/lib/trpc-client", () => ({
 
 const { pointerPassthrough } = await import("renderer/lib/pointer-passthrough");
 const { browserRuntimeRegistry } = await import("./browserRuntimeRegistry");
+const { cleanupWorkspacePaneRuntimes } = await import(
+	"renderer/routes/_authenticated/utils/cleanupWorkspacePaneRuntimes"
+);
+
+test("archived browser cleanup respects the current workspace owner", () => {
+	const paneId = "shared-browser-pane";
+	const entry = {
+		workspaceId: "live",
+		webview: { remove: mock(() => {}) },
+		overlay: { remove: () => {} },
+		detachHandlers: () => {},
+	};
+	const internals = browserRuntimeRegistry as unknown as {
+		entries: Map<string, typeof entry>;
+	};
+	const row = (workspaceId: string) => ({
+		workspaceId,
+		paneLayout: {
+			tabs: [
+				{ panes: { [paneId]: { id: paneId, kind: "browser", data: {} } } },
+			],
+		},
+	});
+	internals.entries.set(paneId, entry);
+	try {
+		cleanupWorkspacePaneRuntimes([row("archived")]);
+		expect(internals.entries.get(paneId)).toBe(entry);
+		expect(entry.webview.remove).not.toHaveBeenCalled();
+		cleanupWorkspacePaneRuntimes([row("live"), row("archived")]);
+		expect(internals.entries.has(paneId)).toBe(false);
+		expect(entry.webview.remove).toHaveBeenCalledTimes(1);
+	} finally {
+		internals.entries.delete(paneId);
+	}
+});
 
 describe("browserRuntimeRegistry detached persistence", () => {
 	test("retains its persistence callback for navigation completion after detach", async () => {

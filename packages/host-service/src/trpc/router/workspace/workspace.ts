@@ -49,15 +49,49 @@ export const workspaceRouter = router({
 				)
 				.all();
 			const archivedIds: string[] = [];
+			const sharedCheckoutIds = new Set<string>();
 			for (const candidate of candidates) {
 				if (isWorkspaceDestroyInFlight(candidate.id)) continue;
-				const removable =
-					(await isMissingPath(candidate.worktreePath)) ||
-					(await sharesProjectCheckout(
-						candidate,
-						candidate.repoPath ? { repoPath: candidate.repoPath } : undefined,
-					));
-				if (removable) archivedIds.push(candidate.id);
+				const shared = await sharesProjectCheckout(
+					candidate,
+					candidate.repoPath ? { repoPath: candidate.repoPath } : undefined,
+				);
+				if (shared) sharedCheckoutIds.add(candidate.id);
+				if (shared || (await isMissingPath(candidate.worktreePath)))
+					archivedIds.push(candidate.id);
+			}
+			const eligibleIds = new Set(archivedIds);
+			const missingCandidates = candidates.filter(
+				({ id }) => eligibleIds.has(id) && !sharedCheckoutIds.has(id),
+			);
+			// Another candidate's I/O may have yielded to a path recreation.
+			await Promise.all(
+				missingCandidates.map(async (candidate) => {
+					if (!(await isMissingPath(candidate.worktreePath)))
+						eligibleIds.delete(candidate.id);
+				}),
+			);
+			// A workspace created during those final checks owns its path already,
+			// even if its checkout has not finished being written to disk yet.
+			const livePaths = new Set(
+				ctx.db
+					.select({ path: workspaces.worktreePath })
+					.from(workspaces)
+					.where(
+						and(
+							inArray(
+								workspaces.worktreePath,
+								missingCandidates.map(({ worktreePath }) => worktreePath),
+							),
+							isNull(workspaces.archivedAt),
+						),
+					)
+					.all()
+					.map(({ path }) => path),
+			);
+			for (const candidate of missingCandidates) {
+				if (livePaths.has(candidate.worktreePath))
+					eligibleIds.delete(candidate.id);
 			}
 			return ctx.db
 				.select({ id: workspaces.id })
@@ -65,7 +99,7 @@ export const workspaceRouter = router({
 				.leftJoin(projects, eq(projects.id, workspaces.projectId))
 				.where(
 					and(
-						inArray(workspaces.id, archivedIds),
+						inArray(workspaces.id, [...eligibleIds]),
 						isNotNull(workspaces.archivedAt),
 						inArray(workspaces.archiveReason, ["deleted", "merged"]),
 						isNull(projects.deletedAt),

@@ -21,6 +21,7 @@ import { createCallerFactory } from "../trpc";
 import { projectRouter } from "../trpc/router/project/project";
 import { workspaceRouter } from "../trpc/router/workspace/workspace";
 import { cleanupGitOps } from "../trpc/router/workspace-cleanup/git-ops";
+import * as missingPath from "../trpc/router/workspace-cleanup/is-missing-path";
 import type { HostServiceContext } from "../types";
 import {
 	listDeletedProjects,
@@ -282,6 +283,57 @@ describe("purge", () => {
 });
 
 describe("delete permanently", () => {
+	test.each([
+		true,
+		false,
+	])("archive confirmation preserves a new path owner (checkout created: %s) while another check waits", async (createCheckout) => {
+		const { ctx, db, addWorkspace } = setup();
+		const first = addWorkspace("a-archived", {
+			archivedAt: 1,
+			archiveReason: "deleted",
+		});
+		const second = addWorkspace("b-archived", {
+			archivedAt: 1,
+			archiveReason: "deleted",
+		});
+		rmSync(first, { recursive: true });
+		rmSync(second, { recursive: true });
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		const original = missingPath.isMissingPath;
+		let delayed = false;
+		const check = spyOn(missingPath, "isMissingPath").mockImplementation(
+			async (path) => {
+				if (path === second && !delayed) {
+					delayed = true;
+					started.resolve();
+					await finish.promise;
+				}
+				return original(path);
+			},
+		);
+		const result = createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
+			workspaceIds: ["a-archived", "b-archived"],
+		});
+		try {
+			await started.promise;
+			if (createCheckout) mkdirSync(first);
+			db.insert(workspaces)
+				.values({
+					id: "new-owner",
+					projectId: PROJECT_ID,
+					worktreePath: first,
+					branch: "new-owner",
+				})
+				.run();
+			finish.resolve();
+			expect(await result).toEqual(["b-archived"]);
+		} finally {
+			finish.resolve();
+			await result;
+			check.mockRestore();
+		}
+	});
 	test("purges a deleted project right away", async () => {
 		const { ctx, addWorkspace, gitCalls, project, repoPath } = setup();
 		const live = addWorkspace("live");
@@ -322,55 +374,112 @@ describe("delete permanently", () => {
 				workspaceIds: ["rollback"],
 			}),
 		).toEqual([]);
+		expect(restoreProject(ctx, PROJECT_ID)).toEqual({
+			restoredWorkspaceCount: 1,
+		});
 	});
 
-	test("a project restored during purge cleanup is not deleted or confirmed", async () => {
+	test("refuses restore and a second purge while filesystem removal is pending", async () => {
 		const { ctx, db, addWorkspace, project, workspace } = setup();
-		addWorkspace("restored-during-cleanup");
+		const path = addWorkspace("restored-during-cleanup");
 		await softDeleteProject(ctx, PROJECT_ID);
 		const started = Promise.withResolvers<void>();
 		const finish = Promise.withResolvers<void>();
 		cleanupGitOps.removeWorktree = async () => {
 			started.resolve();
 			await finish.promise;
+			rmSync(path, { recursive: true });
 			return { stillRegistered: false };
 		};
 		const purge = purgeDeletedProject(ctx, PROJECT_ID);
 		await started.promise;
-		restoreProject(ctx, PROJECT_ID);
-		finish.resolve();
-		expect(await purge).toBe(false);
-		expect(project()?.deletedAt).toBeNull();
-		expect(workspace("restored-during-cleanup")?.archivedAt).toBeNull();
-		expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+		try {
+			expect(() => restoreProject(ctx, PROJECT_ID)).toThrow(
+				"Project deletion is in progress",
+			);
+			expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(false);
+			await expect(
+				createCallerFactory(projectRouter)(ctx).restore({
+					projectId: PROJECT_ID,
+				}),
+			).rejects.toMatchObject({ code: "CONFLICT" });
+			expect(project()?.deletedAt).not.toBeNull();
+			expect(workspace("restored-during-cleanup")?.archivedAt).not.toBeNull();
+			expect(existsSync(path)).toBe(true);
+		} finally {
+			finish.resolve();
+			await purge;
+		}
+		expect(existsSync(path)).toBe(false);
+		expect(project()).toBeUndefined();
+		expect(db.select().from(workspacePurgeTombstones).all()).toHaveLength(1);
 		expect(
 			await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
 				workspaceIds: ["restored-during-cleanup"],
 			}),
-		).toEqual([]);
+		).toEqual(["restored-during-cleanup"]);
 	});
 
-	test("committed purge confirmation survives best-effort worktree cleanup failure", async () => {
-		const { ctx, addWorkspace, workspace } = setup();
+	test.each([
+		"throws",
+		"leaves-path",
+	])("failed worktree removal (%s) retains retryable rows without purge confirmation", async (failure) => {
+		const { ctx, db, addWorkspace, workspace, project } = setup();
 		const path = addWorkspace("left-on-disk");
 		await softDeleteProject(ctx, PROJECT_ID);
 		cleanupGitOps.removeWorktree = async () => {
-			throw new Error("fixture worktree is locked");
+			if (failure === "throws") throw new Error("fixture worktree is locked");
+			return { stillRegistered: false };
 		};
 		const warn = spyOn(console, "warn").mockImplementation(() => {});
 		try {
-			expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(true);
+			expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(false);
 			expect(existsSync(path)).toBe(true);
-			expect(workspace("left-on-disk")).toBeUndefined();
-			expect(warn).toHaveBeenCalled();
+			expect(workspace("left-on-disk")).toBeDefined();
+			expect(project()).toBeDefined();
+			expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+			if (failure === "throws") expect(warn).toHaveBeenCalled();
 			expect(
 				await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
 					workspaceIds: ["left-on-disk", "unknown"],
 				}),
-			).toEqual(["left-on-disk"]);
+			).toEqual([]);
+			cleanupGitOps.removeWorktree = async () => {
+				rmSync(path, { recursive: true });
+				return { stillRegistered: false };
+			};
+			expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(true);
+			expect(workspace("left-on-disk")).toBeUndefined();
 		} finally {
 			warn.mockRestore();
 		}
+	});
+
+	test("does not purge a workspace inserted while filesystem cleanup waits", async () => {
+		const { ctx, db, addWorkspace, project, workspace } = setup();
+		const path = addWorkspace("original");
+		await softDeleteProject(ctx, PROJECT_ID);
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		cleanupGitOps.removeWorktree = async () => {
+			started.resolve();
+			await finish.promise;
+			rmSync(path, { recursive: true });
+			return { stillRegistered: false };
+		};
+		const purge = purgeDeletedProject(ctx, PROJECT_ID);
+		await started.promise;
+		const latePath = addWorkspace("late-create");
+		finish.resolve();
+		expect(await purge).toBe(false);
+		expect(project()).toBeDefined();
+		expect(workspace("original")).toBeDefined();
+		expect(workspace("late-create")).toBeDefined();
+		expect(existsSync(latePath)).toBe(true);
+		expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+		expect(restoreProject(ctx, PROJECT_ID)).toEqual({
+			restoredWorkspaceCount: 0,
+		});
 	});
 
 	test("purge confirmation survives reopening storage and never overrides a current workspace", async () => {

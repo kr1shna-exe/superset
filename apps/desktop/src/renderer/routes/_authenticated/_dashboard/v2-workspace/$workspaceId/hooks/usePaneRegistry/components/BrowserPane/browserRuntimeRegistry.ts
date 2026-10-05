@@ -614,9 +614,10 @@ class BrowserRuntimeRegistryImpl {
 		}
 	}
 
-	destroy(paneId: string): void {
+	destroy(paneId: string, workspaceId?: string): void {
 		const entry = this.entries.get(paneId);
 		if (!entry) return;
+		if (workspaceId !== undefined && entry.workspaceId !== workspaceId) return;
 		entry.onPersist = null;
 		entry.onClose = null;
 		entry.resizeObserver?.disconnect();
