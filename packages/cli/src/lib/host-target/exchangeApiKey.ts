@@ -8,13 +8,16 @@ function isApiKey(bearer: string): boolean {
 	return bearer.startsWith("sk_live_") || bearer.startsWith("sk_test_");
 }
 
-export function createHostTokenProvider(bearer: string): () => Promise<string> {
+export function createHostTokenProvider(
+	bearer: string,
+	now: () => number = Date.now,
+): (signal?: AbortSignal) => Promise<string> {
 	let cached: { token: string; expiresAt: number } | undefined;
 	let pending: Promise<string> | undefined;
-	return async () => {
+	return async (signal) => {
 		if (!isApiKey(bearer)) return bearer;
-		if (cached && Date.now() < cached.expiresAt - 30_000) return cached.token;
-		pending ??= exchangeApiKey(bearer)
+		if (cached && now() < cached.expiresAt - 30_000) return cached.token;
+		pending ??= exchangeApiKey(bearer, signal)
 			.then((token) => {
 				let expiresAt = 0;
 				try {
@@ -36,14 +39,19 @@ export function createHostTokenProvider(bearer: string): () => Promise<string> {
 	};
 }
 
-export async function exchangeApiKey(bearer: string): Promise<string> {
+export async function exchangeApiKey(
+	bearer: string,
+	signal?: AbortSignal,
+): Promise<string> {
 	if (!isApiKey(bearer)) return bearer;
 
 	let response: Response;
 	try {
 		response = await fetch(`${env.SUPERSET_API_URL}/api/auth/token`, {
 			headers: { "x-api-key": bearer },
-			signal: AbortSignal.timeout(10_000),
+			signal: signal
+				? AbortSignal.any([signal, AbortSignal.timeout(10_000)])
+				: AbortSignal.timeout(10_000),
 			redirect: "error",
 		});
 	} catch {
