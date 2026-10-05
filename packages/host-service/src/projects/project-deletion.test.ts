@@ -1,8 +1,9 @@
 import { Database } from "bun:sqlite";
-import { afterAll, afterEach, describe, expect, test } from "bun:test";
+import { afterAll, afterEach, describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { runMigrations } from "@superset/shared/sqlite-migrations";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/bun-sqlite";
 import { migrate } from "drizzle-orm/bun-sqlite/migrator";
@@ -12,6 +13,7 @@ import {
 	projects,
 	terminalAgentBindings,
 	terminalSessions,
+	workspacePurgeTombstones,
 	workspaces,
 } from "../db/schema";
 import { runArchivedWorkspaceReconcile } from "../runtime/archived-workspace-reconcile";
@@ -35,10 +37,17 @@ const PROJECT_ID = "00000000-0000-4000-8000-000000000001";
 const root = mkdtempSync(join(tmpdir(), "project-deletion-"));
 afterAll(() => rmSync(root, { recursive: true, force: true }));
 const originalGitOps = { ...cleanupGitOps };
-afterEach(() => Object.assign(cleanupGitOps, originalGitOps));
+const databases = new Set<Database>();
+afterEach(() => {
+	Object.assign(cleanupGitOps, originalGitOps);
+	for (const sqlite of databases) sqlite.close();
+	databases.clear();
+});
 
-function setup() {
-	const db = drizzle(new Database(":memory:"), {
+function setup(dbPath = ":memory:") {
+	const sqlite = new Database(dbPath);
+	databases.add(sqlite);
+	const db = drizzle(sqlite, {
 		schema,
 	}) as unknown as HostDb;
 	migrate(db as never, { migrationsFolder: MIGRATIONS_FOLDER });
@@ -99,6 +108,7 @@ function setup() {
 	const workspace = (id: string) =>
 		db.select().from(workspaces).where(eq(workspaces.id, id)).get();
 	return {
+		sqlite,
 		db,
 		ctx,
 		repoPath,
@@ -229,10 +239,20 @@ describe("listing", () => {
 
 describe("purge", () => {
 	test("keeps projects inside the restore window", async () => {
-		const { ctx, project } = setup();
+		const { ctx, db, addWorkspace, project } = setup();
+		addWorkspace("restorable");
 		await softDeleteProject(ctx, PROJECT_ID);
 		expect(await purgeExpiredProjects(ctx)).toBe(0);
 		expect(project()).toBeDefined();
+		expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+		const api = createCallerFactory(workspaceRouter)(ctx);
+		expect(await api.getArchivedIds({ workspaceIds: ["restorable"] })).toEqual(
+			[],
+		);
+		restoreProject(ctx, PROJECT_ID);
+		expect(await api.getArchivedIds({ workspaceIds: ["restorable"] })).toEqual(
+			[],
+		);
 	});
 
 	test("removes expired projects and their worktrees but never the repository", async () => {
@@ -253,6 +273,11 @@ describe("purge", () => {
 		expect(workspace("live")).toBeUndefined();
 		expect(gitCalls).toEqual([["worktree", "remove", live, "force=false"]]);
 		expect(existsSync(repoPath)).toBe(true);
+		expect(
+			await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
+				workspaceIds: ["live", "checkout", "other-host"],
+			}),
+		).toEqual(["checkout", "live"]);
 	});
 });
 
@@ -265,6 +290,10 @@ describe("delete permanently", () => {
 		expect(project()).toBeUndefined();
 		expect(gitCalls).toEqual([["worktree", "remove", live, "force=false"]]);
 		expect(existsSync(repoPath)).toBe(true);
+		const api = createCallerFactory(workspaceRouter)(ctx);
+		expect(
+			await api.getArchivedIds({ workspaceIds: ["live", "other-host"] }),
+		).toEqual(["live"]);
 	});
 
 	test("refuses a project that was never deleted", async () => {
@@ -273,6 +302,104 @@ describe("delete permanently", () => {
 		expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(false);
 		expect(project()).toBeDefined();
 		expect(gitCalls).toEqual([]);
+	});
+
+	test("a rolled-back purge does not leave confirmation behind", async () => {
+		const { ctx, db, sqlite, addWorkspace, project, workspace } = setup();
+		addWorkspace("rollback", { type: "local" });
+		await softDeleteProject(ctx, PROJECT_ID);
+		sqlite.exec(
+			"CREATE TRIGGER reject_workspace_delete BEFORE DELETE ON workspaces BEGIN SELECT RAISE(ABORT, 'fixture rejects deletion'); END",
+		);
+		await expect(purgeDeletedProject(ctx, PROJECT_ID)).rejects.toThrow(
+			"fixture rejects deletion",
+		);
+		expect(project()).toBeDefined();
+		expect(workspace("rollback")).toBeDefined();
+		expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+		expect(
+			await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
+				workspaceIds: ["rollback"],
+			}),
+		).toEqual([]);
+	});
+
+	test("a project restored during purge cleanup is not deleted or confirmed", async () => {
+		const { ctx, db, addWorkspace, project, workspace } = setup();
+		addWorkspace("restored-during-cleanup");
+		await softDeleteProject(ctx, PROJECT_ID);
+		const started = Promise.withResolvers<void>();
+		const finish = Promise.withResolvers<void>();
+		cleanupGitOps.removeWorktree = async () => {
+			started.resolve();
+			await finish.promise;
+			return { stillRegistered: false };
+		};
+		const purge = purgeDeletedProject(ctx, PROJECT_ID);
+		await started.promise;
+		restoreProject(ctx, PROJECT_ID);
+		finish.resolve();
+		expect(await purge).toBe(false);
+		expect(project()?.deletedAt).toBeNull();
+		expect(workspace("restored-during-cleanup")?.archivedAt).toBeNull();
+		expect(db.select().from(workspacePurgeTombstones).all()).toEqual([]);
+		expect(
+			await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
+				workspaceIds: ["restored-during-cleanup"],
+			}),
+		).toEqual([]);
+	});
+
+	test("committed purge confirmation survives best-effort worktree cleanup failure", async () => {
+		const { ctx, addWorkspace, workspace } = setup();
+		const path = addWorkspace("left-on-disk");
+		await softDeleteProject(ctx, PROJECT_ID);
+		cleanupGitOps.removeWorktree = async () => {
+			throw new Error("fixture worktree is locked");
+		};
+		const warn = spyOn(console, "warn").mockImplementation(() => {});
+		try {
+			expect(await purgeDeletedProject(ctx, PROJECT_ID)).toBe(true);
+			expect(existsSync(path)).toBe(true);
+			expect(workspace("left-on-disk")).toBeUndefined();
+			expect(warn).toHaveBeenCalled();
+			expect(
+				await createCallerFactory(workspaceRouter)(ctx).getArchivedIds({
+					workspaceIds: ["left-on-disk", "unknown"],
+				}),
+			).toEqual(["left-on-disk"]);
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	test("purge confirmation survives reopening storage and never overrides a current workspace", async () => {
+		const dbPath = join(mkdtempSync(join(root, "restart-")), "host.db");
+		const { ctx, sqlite, addWorkspace, repoPath } = setup(dbPath);
+		addWorkspace("purged");
+		addWorkspace("unrequested");
+		await softDeleteProject(ctx, PROJECT_ID);
+		await purgeDeletedProject(ctx, PROJECT_ID);
+		sqlite.close();
+		databases.delete(sqlite);
+		const reopened = new Database(dbPath);
+		databases.add(reopened);
+		const db = drizzle(reopened, { schema }) as unknown as HostDb;
+		runMigrations(db, MIGRATIONS_FOLDER);
+		const api = createCallerFactory(workspaceRouter)({ ...ctx, db });
+		expect(
+			await api.getArchivedIds({ workspaceIds: ["purged", "other-host"] }),
+		).toEqual(["purged"]);
+		expect(await api.getArchivedIds({ workspaceIds: [] })).toEqual([]);
+		db.insert(workspaces)
+			.values({
+				id: "purged",
+				type: "session",
+				worktreePath: repoPath,
+				branch: "main",
+			})
+			.run();
+		expect(await api.getArchivedIds({ workspaceIds: ["purged"] })).toEqual([]);
 	});
 });
 

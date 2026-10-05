@@ -1,10 +1,11 @@
 import { existsSync } from "node:fs";
-import { and, eq, inArray, isNotNull, isNull, lt } from "drizzle-orm";
+import { and, eq, inArray, isNotNull, isNull, lt, sql } from "drizzle-orm";
 import {
 	projects,
 	tagFolderSettings,
 	terminalAgentBindings,
 	terminalSessions,
+	workspacePurgeTombstones,
 	workspaces,
 } from "../db/schema";
 import { runTeardown } from "../runtime/teardown";
@@ -191,8 +192,11 @@ export async function purgeExpiredProjects(
 		.from(projects)
 		.where(lt(projects.deletedAt, now - PROJECT_RESTORE_WINDOW_MS))
 		.all();
-	for (const project of expired) await purgeProject(ctx, project);
-	return expired.length;
+	let purgedCount = 0;
+	for (const project of expired) {
+		if (await purgeProject(ctx, project)) purgedCount++;
+	}
+	return purgedCount;
 }
 
 /**
@@ -206,14 +210,13 @@ export async function purgeDeletedProject(
 ): Promise<boolean> {
 	const project = getLocalProject(ctx.db, projectId);
 	if (!project || project.deletedAt == null) return false;
-	await purgeProject(ctx, project);
-	return true;
+	return purgeProject(ctx, project);
 }
 
 async function purgeProject(
 	ctx: ProjectDeletionContext,
 	project: typeof projects.$inferSelect,
-) {
+): Promise<boolean> {
 	const rows = ctx.db
 		.select()
 		.from(workspaces)
@@ -251,13 +254,37 @@ async function purgeProject(
 			});
 		}
 	}
-	ctx.db.transaction((tx) => {
+	const purged = ctx.db.transaction((tx) => {
+		const current = tx
+			.select({ deletedAt: projects.deletedAt })
+			.from(projects)
+			.where(eq(projects.id, project.id))
+			.get();
+		if (!current || current.deletedAt !== project.deletedAt) return false;
+		const purgedAt = Date.now();
+		tx.insert(workspacePurgeTombstones)
+			.select(
+				tx
+					.select({
+						workspaceId: workspaces.id,
+						purgedAt: sql<number>`${purgedAt}`.as("purged_at"),
+					})
+					.from(workspaces)
+					.where(eq(workspaces.projectId, project.id)),
+			)
+			.onConflictDoUpdate({
+				target: workspacePurgeTombstones.workspaceId,
+				set: { purgedAt },
+			})
+			.run();
 		tx.delete(workspaces).where(eq(workspaces.projectId, project.id)).run();
 		tx.delete(projects).where(eq(projects.id, project.id)).run();
 		tx.delete(tagFolderSettings)
 			.where(eq(tagFolderSettings.scope, project.id))
 			.run();
+		return true;
 	});
+	if (!purged) return false;
 	ctx.eventBus.broadcastTagFoldersChanged({
 		scope: project.id,
 		settings: [],
@@ -266,6 +293,7 @@ async function purgeProject(
 	for (const row of rows) {
 		if (row.archivedAt === project.deletedAt) trackWorkspaceDeleted(ctx, row);
 	}
+	return true;
 }
 
 /**

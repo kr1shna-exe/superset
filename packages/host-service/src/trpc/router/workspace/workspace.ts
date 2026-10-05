@@ -4,7 +4,11 @@ import { workspaceTagsInputSchema } from "@superset/shared/workspace-tags";
 import { TRPCError } from "@trpc/server";
 import { and, eq, inArray, isNotNull, isNull } from "drizzle-orm";
 import { z } from "zod";
-import { projects, workspaces } from "../../../db/schema";
+import {
+	projects,
+	workspacePurgeTombstones,
+	workspaces,
+} from "../../../db/schema";
 import {
 	getWorkspaceTags,
 	getWorkspaceTagsByWorkspaceId,
@@ -55,7 +59,6 @@ export const workspaceRouter = router({
 					));
 				if (removable) archivedIds.push(candidate.id);
 			}
-			if (archivedIds.length === 0) return [];
 			return ctx.db
 				.select({ id: workspaces.id })
 				.from(workspaces)
@@ -67,6 +70,24 @@ export const workspaceRouter = router({
 						inArray(workspaces.archiveReason, ["deleted", "merged"]),
 						isNull(projects.deletedAt),
 					),
+				)
+				.union(
+					ctx.db
+						.select({ id: workspacePurgeTombstones.workspaceId })
+						.from(workspacePurgeTombstones)
+						.leftJoin(
+							workspaces,
+							eq(workspaces.id, workspacePurgeTombstones.workspaceId),
+						)
+						.where(
+							and(
+								inArray(
+									workspacePurgeTombstones.workspaceId,
+									input.workspaceIds,
+								),
+								isNull(workspaces.id),
+							),
+						),
 				)
 				.all()
 				.filter(({ id }) => !isWorkspaceDestroyInFlight(id))
