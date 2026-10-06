@@ -34,6 +34,7 @@ function createFixture(stall: "registration" | "relay" | "auth") {
 	const stalled = deferred<void>();
 	const release = deferred<void>();
 	const connected = deferred<void>();
+	const tokenAborted = deferred<void>();
 	const controller = new AbortController();
 	let registrations = 0;
 	let tokenRequests = 0;
@@ -85,6 +86,13 @@ function createFixture(stall: "registration" | "relay" | "auth") {
 			if (new URL(request.url).pathname === "/api/auth/token") {
 				tokenRequests++;
 				if (tokenRequests === 1) {
+					request.signal.addEventListener(
+						"abort",
+						() => tokenAborted.resolve(),
+						{
+							once: true,
+						},
+					);
 					stalled.resolve();
 					await release.promise;
 				}
@@ -121,6 +129,7 @@ function createFixture(stall: "registration" | "relay" | "auth") {
 	return {
 		stalled: stalled.promise,
 		connected: connected.promise,
+		tokenAborted: tokenAborted.promise,
 		startup,
 		controller,
 		get registrations() {
@@ -169,6 +178,20 @@ test("retries when authentication stalls before the registration fetch", async (
 		expect(await fixture.startup).not.toBeNull();
 		expect(fixture.tokenRequests).toBe(2);
 		expect(fixture.registrations).toBe(1);
+		await withinTestDeadline(fixture.tokenAborted);
+	} finally {
+		await fixture.close();
+	}
+});
+
+test("shutdown cancels authentication before the registration fetch", async () => {
+	const fixture = createFixture("auth");
+	try {
+		await withinTestDeadline(fixture.stalled);
+		fixture.controller.abort();
+		expect(await withinTestDeadline(fixture.startup)).toBeNull();
+		await withinTestDeadline(fixture.tokenAborted);
+		expect(fixture.registrations).toBe(0);
 	} finally {
 		await fixture.close();
 	}

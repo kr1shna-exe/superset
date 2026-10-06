@@ -51,6 +51,27 @@ function retryOnUnauthorizedLink(
 			});
 }
 
+async function getBatchAuthHeaders(
+	authProvider: ApiAuthProvider,
+	signals: (AbortSignal | null | undefined)[],
+): Promise<Record<string, string>> {
+	const controller = new AbortController();
+	const abortIfAllCancelled = () => {
+		if (signals.every((signal) => signal?.aborted)) controller.abort();
+	};
+	for (const signal of signals) {
+		signal?.addEventListener("abort", abortIfAllCancelled, { once: true });
+	}
+	abortIfAllCancelled();
+	try {
+		return await authProvider.getHeaders(controller.signal);
+	} finally {
+		for (const signal of signals) {
+			signal?.removeEventListener("abort", abortIfAllCancelled);
+		}
+	}
+}
+
 export function createApiClient(
 	baseUrl: string,
 	authProvider: ApiAuthProvider,
@@ -62,7 +83,7 @@ export function createApiClient(
 			httpBatchLink({
 				url: `${baseUrl}/api/trpc`,
 				transformer: SuperJSON,
-				async headers() {
+				async headers({ opList }) {
 					// Pin every host→cloud request to this host's bound org. The
 					// host's session-exchanged JWT (better-auth jwt plugin) only
 					// carries `organizationIds`, not a singular active org, so
@@ -70,7 +91,10 @@ export function createApiClient(
 					// reads `ctx.activeOrganizationId`. The cloud middleware
 					// validates membership before honoring this header.
 					return {
-						...(await authProvider.getHeaders()),
+						...(await getBatchAuthHeaders(
+							authProvider,
+							opList.map((op) => op.signal),
+						)),
 						[ORGANIZATION_HEADER]: organizationId,
 					};
 				},
