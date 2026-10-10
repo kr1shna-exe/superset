@@ -1,31 +1,20 @@
 import { describe, expect, mock, spyOn, test } from "bun:test";
+import { pointerPassthrough } from "renderer/lib/pointer-passthrough";
+import { BrowserRuntimeRegistryImpl } from "./browserRuntimeRegistry";
 
 const register = mock(async (_input: unknown) => ({ success: true }));
 const unregister = mock(async () => ({ success: true }));
 
-mock.module("renderer/lib/trpc-client", () => ({
-	electronTrpcClient: {
-		keyboardLayout: { changes: { subscribe: () => {} } },
-		browser: {
-			register: { mutate: register },
-			unregister: { mutate: unregister },
-			onAgentActivePanes: { subscribe: () => ({ unsubscribe: () => {} }) },
-		},
-		browserHistory: {
-			upsert: { mutate: async () => ({ success: true }) },
-		},
+const browserRuntimeRegistry = new BrowserRuntimeRegistryImpl({
+	browser: {
+		register: { mutate: register },
+		unregister: { mutate: unregister },
+		onAgentActivePanes: { subscribe: () => ({ unsubscribe: () => {} }) },
 	},
-}));
-
-(
-	document.documentElement as unknown as Record<string, unknown>
-).toggleAttribute = mock(() => {});
-
-const { pointerPassthrough } = await import("renderer/lib/pointer-passthrough");
-const { browserRuntimeRegistry } = await import("./browserRuntimeRegistry");
-const { cleanupWorkspacePaneRuntimes } = await import(
-	"renderer/routes/_authenticated/utils/cleanupWorkspacePaneRuntimes"
-);
+	browserHistory: {
+		upsert: { mutate: async () => ({ success: true }) },
+	},
+} as unknown as ConstructorParameters<typeof BrowserRuntimeRegistryImpl>[0]);
 
 test("archived browser cleanup respects the current workspace owner", () => {
 	const paneId = "shared-browser-pane";
@@ -38,20 +27,13 @@ test("archived browser cleanup respects the current workspace owner", () => {
 	const internals = browserRuntimeRegistry as unknown as {
 		entries: Map<string, typeof entry>;
 	};
-	const row = (workspaceId: string) => ({
-		workspaceId,
-		paneLayout: {
-			tabs: [
-				{ panes: { [paneId]: { id: paneId, kind: "browser", data: {} } } },
-			],
-		},
-	});
 	internals.entries.set(paneId, entry);
 	try {
-		cleanupWorkspacePaneRuntimes([row("archived")]);
+		browserRuntimeRegistry.destroy(paneId, "archived");
 		expect(internals.entries.get(paneId)).toBe(entry);
 		expect(entry.webview.remove).not.toHaveBeenCalled();
-		cleanupWorkspacePaneRuntimes([row("live"), row("archived")]);
+		browserRuntimeRegistry.destroy(paneId, "live");
+		browserRuntimeRegistry.destroy(paneId, "archived");
 		expect(internals.entries.has(paneId)).toBe(false);
 		expect(entry.webview.remove).toHaveBeenCalledTimes(1);
 	} finally {
@@ -183,6 +165,15 @@ describe("browserRuntimeRegistry pointer passthrough", () => {
 		registryInternals.entries.set("passthrough-shown", shown);
 		registryInternals.entries.set("passthrough-parked", parked);
 
+		const root = document.documentElement as unknown as {
+			toggleAttribute?: unknown;
+		};
+		const ownToggleAttribute = Object.getOwnPropertyDescriptor(
+			root,
+			"toggleAttribute",
+		);
+		root.toggleAttribute = () => {};
+
 		try {
 			pointerPassthrough.set("test-gesture", true);
 			expect(shown.webview.style.pointerEvents).toBe("none");
@@ -192,6 +183,11 @@ describe("browserRuntimeRegistry pointer passthrough", () => {
 			expect(shown.webview.style.pointerEvents).toBe("auto");
 		} finally {
 			pointerPassthrough.set("test-gesture", false);
+			if (ownToggleAttribute) {
+				Object.defineProperty(root, "toggleAttribute", ownToggleAttribute);
+			} else {
+				delete root.toggleAttribute;
+			}
 			registryInternals.entries.delete("passthrough-shown");
 			registryInternals.entries.delete("passthrough-parked");
 		}

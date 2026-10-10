@@ -5,6 +5,10 @@
 	"type": "module",
 	"exports": {
 		"./terminal-colors": "./src/terminal-colors.ts",
+		"./voice": {
+			"types": "./src/voice/index.ts",
+			"default": "./src/voice/index.ts"
+		},
 		"./connectors": {
 			"types": "./src/connectors/index.ts",
 			"default": "./src/connectors/index.ts"
@@ -36,6 +40,14 @@
 		"./page-storage": {
 			"types": "./src/page-storage.ts",
 			"default": "./src/page-storage.ts"
+		},
+		"./page-presence": {
+			"types": "./src/page-presence.ts",
+			"default": "./src/page-presence.ts"
+		},
+		"./page-presence-client": {
+			"types": "./src/page-presence-client.ts",
+			"default": "./src/page-presence-client.ts"
 		},
 		"./page-comments": {
 			"types": "./src/page-comments/index.ts",
@@ -112,6 +124,10 @@
 		"./sandbox-contract": {
 			"types": "./src/sandbox-contract.ts",
 			"default": "./src/sandbox-contract.ts"
+		},
+		"./pull-request-diff": {
+			"types": "./src/pull-request-diff/index.ts",
+			"default": "./src/pull-request-diff/index.ts"
 		},
 		"./pull-request": {
 			"types": "./src/pull-request.ts",
@@ -381,7 +397,7 @@
 	"scripts": {
 		"clean": "git clean -xdf .cache .turbo dist node_modules",
 		"typecheck": "tsc --noEmit --emitDeclarationOnly false",
-		"test": "bun test --isolate"
+		"test": "bun test"
 	},
 	"dependencies": {
 		"@date-fns/tz": "1.4.1",

@@ -126,6 +126,7 @@ export default async function RootLayout({
 	return (
 		<html
 			lang={locale}
+			style={{ colorScheme: "dark" }}
 			className={`dark overscroll-none ${ibmPlexMono.variable} ${inter.variable}`}
 			suppressHydrationWarning
 		>
