@@ -21,6 +21,7 @@ test.each([
 	let authSignal: AbortSignal | undefined;
 	let tokenRequests = 0;
 	let apiRequests = 0;
+	let cancellationDeadline: ReturnType<typeof setTimeout> | undefined;
 	const t = initTRPC.create({ transformer: SuperJSON });
 	const router = t.router({
 		host: t.router({
@@ -67,8 +68,16 @@ test.each([
 		expect(authSignal?.aborted).toBe(false);
 		if (secondOperation === "cancelled") second.abort();
 		expect(authSignal?.aborted).toBe(secondOperation === "cancelled");
-		releaseAuth();
-		const [firstResult, secondResult] = await results;
+		if (secondOperation !== "cancelled") releaseAuth();
+		const [firstResult, secondResult] = await Promise.race([
+			results,
+			new Promise<never>((_, reject) => {
+				cancellationDeadline = setTimeout(
+					() => reject(new Error("Batch authentication did not settle")),
+					500,
+				);
+			}),
+		]);
 		if (secondOperation === "cancelled") {
 			expect(firstResult.status).toBe("rejected");
 			expect(secondResult.status).toBe("rejected");
@@ -82,6 +91,7 @@ test.each([
 		}
 		expect(tokenRequests).toBe(1);
 	} finally {
+		clearTimeout(cancellationDeadline);
 		first.abort();
 		second.abort();
 		releaseAuth();

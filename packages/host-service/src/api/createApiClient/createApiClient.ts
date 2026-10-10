@@ -63,9 +63,23 @@ async function getBatchAuthHeaders(
 		signal?.addEventListener("abort", abortIfAllCancelled, { once: true });
 	}
 	abortIfAllCancelled();
+	let rejectOnAbort: (() => void) | undefined;
 	try {
-		return await authProvider.getHeaders(controller.signal);
+		controller.signal.throwIfAborted();
+		const aborted = new Promise<never>((_, reject) => {
+			rejectOnAbort = () => reject(controller.signal.reason);
+			controller.signal.addEventListener("abort", rejectOnAbort, {
+				once: true,
+			});
+		});
+		return await Promise.race([
+			aborted,
+			authProvider.getHeaders(controller.signal),
+		]);
 	} finally {
+		if (rejectOnAbort) {
+			controller.signal.removeEventListener("abort", rejectOnAbort);
+		}
 		for (const signal of signals) {
 			signal?.removeEventListener("abort", abortIfAllCancelled);
 		}
