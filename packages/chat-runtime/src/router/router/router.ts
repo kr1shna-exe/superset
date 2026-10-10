@@ -3,13 +3,18 @@ import {
 	closeSessionInputSchema,
 	createSessionInputSchema,
 	forkSessionInputSchema,
+	getItemBodiesInputSchema,
 	getItemsInputSchema,
+	getOutlineInputSchema,
 	getSessionInputSchema,
 	listSessionsInputSchema,
 	promptInputSchema,
+	queuedPromptInputSchema,
 	respondToApprovalInputSchema,
+	resumeQueueInputSchema,
 	setConfigOptionInputSchema,
 	setModeInputSchema,
+	stopBackgroundTaskInputSchema,
 } from "@superset/chat/protocol";
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import { initTRPC, TRPCError } from "@trpc/server";
@@ -26,6 +31,7 @@ export type ChatRouterOptions = {
 
 const UNKNOWN_HARNESS = /^unknown harness /;
 const NOT_RUNNING = /^chat session (.+) is not running$/;
+const NOT_QUEUED = /^prompt .+ is not queued$/;
 
 function mapCommandError(runtime: ChatRuntime, error: unknown): unknown {
 	if (error instanceof TRPCError) return error;
@@ -33,6 +39,13 @@ function mapCommandError(runtime: ChatRuntime, error: unknown): unknown {
 	if (UNKNOWN_HARNESS.test(error.message)) {
 		return new TRPCError({
 			code: "BAD_REQUEST",
+			message: error.message,
+			cause: error,
+		});
+	}
+	if (NOT_QUEUED.test(error.message)) {
+		return new TRPCError({
+			code: "NOT_FOUND",
 			message: error.message,
 			cause: error,
 		});
@@ -79,10 +92,34 @@ export function createChatRouter(
 			.input(promptInputSchema)
 			.mutation(({ input }) => guarded(() => runtime.commands.prompt(input))),
 
+		removeQueuedPrompt: t.procedure
+			.input(queuedPromptInputSchema)
+			.mutation(({ input }) =>
+				guarded(() => runtime.commands.removeQueuedPrompt(input)),
+			),
+
+		steerQueuedPrompt: t.procedure
+			.input(queuedPromptInputSchema)
+			.mutation(({ input }) =>
+				guarded(() => runtime.commands.steerQueuedPrompt(input)),
+			),
+
+		resumeQueue: t.procedure
+			.input(resumeQueueInputSchema)
+			.mutation(({ input }) =>
+				guarded(() => runtime.commands.resumeQueue(input)),
+			),
+
 		cancelTurn: t.procedure
 			.input(cancelTurnInputSchema)
 			.mutation(({ input }) =>
 				guarded(() => runtime.commands.cancelTurn(input)),
+			),
+
+		stopBackgroundTask: t.procedure
+			.input(stopBackgroundTaskInputSchema)
+			.mutation(({ input }) =>
+				guarded(() => runtime.commands.stopBackgroundTask(input)),
 			),
 
 		respondToApproval: t.procedure
@@ -117,6 +154,10 @@ export function createChatRouter(
 			.input(getSessionInputSchema)
 			.query(({ input }) => runtime.commands.getSession(input)),
 
+		getQueue: t.procedure
+			.input(getSessionInputSchema)
+			.query(({ input }) => runtime.commands.getQueue(input)),
+
 		listSessions: t.procedure
 			.input(listSessionsInputSchema)
 			.query(({ input }) =>
@@ -131,6 +172,14 @@ export function createChatRouter(
 		getItems: t.procedure
 			.input(getItemsInputSchema)
 			.query(({ input }) => runtime.commands.getItems(input)),
+
+		getOutline: t.procedure
+			.input(getOutlineInputSchema)
+			.query(({ input }) => runtime.commands.getOutline(input)),
+
+		getItemBodies: t.procedure
+			.input(getItemBodiesInputSchema)
+			.query(({ input }) => runtime.commands.getItemBodies(input)),
 	});
 }
 

@@ -13,6 +13,7 @@ export const textElementSchema = z.looseObject({
 		end: z.number().int().nonnegative(),
 	}),
 	elementKind: z.enum(["file_mention", "slash_command", "other"]),
+	label: z.string().optional(),
 });
 export type TextElement = z.infer<typeof textElementSchema>;
 
@@ -55,6 +56,10 @@ export const decisionSchema = z.discriminatedUnion("type", [
 	z.looseObject({ type: z.literal("decline") }),
 	z.looseObject({ type: z.literal("cancel") }),
 	z.looseObject({ type: z.literal("option"), optionId: z.string().min(1) }),
+	z.looseObject({
+		type: z.literal("form"),
+		values: z.record(z.string(), z.union([z.string(), z.array(z.string())])),
+	}),
 ]);
 export type Decision = z.infer<typeof decisionSchema>;
 
@@ -76,6 +81,7 @@ export const userMessageSchema = z.looseObject({
 	kind: z.literal("user_message"),
 	clientId: z.string().min(1).optional(),
 	queued: z.boolean().optional(),
+	discarded: z.boolean().optional(),
 	content: z.array(userContentSchema),
 });
 export type UserMessage = z.infer<typeof userMessageSchema>;
@@ -119,6 +125,15 @@ export const toolCallSchema = z.looseObject({
 		.optional(),
 	rawInput: z.unknown().optional(),
 	rawOutput: z.unknown().optional(),
+	subagent: z.boolean().optional(),
+	bodyOmitted: z.boolean().optional(),
+	mcpServer: z
+		.looseObject({
+			name: z.string(),
+			tool: z.string(),
+			source: z.string().optional(),
+		})
+		.optional(),
 });
 export type ToolCall = z.infer<typeof toolCallSchema>;
 
@@ -134,6 +149,24 @@ export const planSchema = z.looseObject({
 });
 export type Plan = z.infer<typeof planSchema>;
 
+export const formFieldSchema = z.looseObject({
+	id: z.string().min(1),
+	title: z.string().optional(),
+	description: z.string().optional(),
+	input: z.enum(["single", "multi", "text", "number", "integer", "boolean"]),
+	required: z.boolean().optional(),
+	options: z
+		.array(
+			z.looseObject({
+				value: z.string(),
+				label: z.string(),
+				description: z.string().optional(),
+			}),
+		)
+		.optional(),
+});
+export type FormField = z.infer<typeof formFieldSchema>;
+
 export const approvalRequestSchema = z.looseObject({
 	...itemBaseFields,
 	kind: z.literal("approval_request"),
@@ -141,7 +174,18 @@ export const approvalRequestSchema = z.looseObject({
 	title: z.string(),
 	detail: z.array(toolContentSchema).optional(),
 	options: z
-		.array(z.looseObject({ optionId: z.string().min(1), label: z.string() }))
+		.array(
+			z.looseObject({
+				optionId: z.string().min(1),
+				label: z.string(),
+				kind: z
+					.enum(["allow_once", "allow_always", "reject_once", "reject_always"])
+					.optional(),
+			}),
+		)
+		.optional(),
+	form: z
+		.looseObject({ message: z.string(), fields: z.array(formFieldSchema) })
 		.optional(),
 	status: z.enum(["pending", "answered", "stale"]),
 	decision: decisionSchema.optional(),

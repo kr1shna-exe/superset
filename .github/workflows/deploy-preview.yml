@@ -21,6 +21,7 @@ jobs:
   create-database:
     name: Create Database (Neon)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: preview
 
     steps:
@@ -51,6 +52,7 @@ jobs:
   deploy-database:
     name: Deploy Database (Neon)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     environment: preview
     needs: create-database
 
@@ -93,6 +95,7 @@ jobs:
   deploy-api:
     name: Deploy API
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     environment: preview
     needs: create-database
 
@@ -209,7 +212,7 @@ jobs:
           SANDBOX_GATE_SECRET: ${{ secrets.SANDBOX_GATE_SECRET }}
           SANDBOX_GATE_ORIGIN: ${{ secrets.SANDBOX_GATE_ORIGIN }}
           SENTRY_DSN_SANDBOX: ${{ secrets.SENTRY_DSN_SANDBOX }}
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          SERVER_OPENAI_API_KEY: ${{ secrets.SERVER_OPENAI_API_KEY }}
           GH_APP_SLUG: ${{ secrets.GH_APP_SLUG }}
         run: |
           vercel pull --yes --environment=preview --token=$VERCEL_TOKEN
@@ -284,7 +287,7 @@ jobs:
             --env SANDBOX_GATE_SECRET=$SANDBOX_GATE_SECRET \
             --env SANDBOX_GATE_ORIGIN=$SANDBOX_GATE_ORIGIN \
             --env SENTRY_DSN_SANDBOX=$SENTRY_DSN_SANDBOX \
-            --env OPENAI_API_KEY=$OPENAI_API_KEY \
+            --env SERVER_OPENAI_API_KEY=$SERVER_OPENAI_API_KEY \
             --env GH_APP_SLUG=$GH_APP_SLUG)
           vercel alias $VERCEL_URL ${{ env.API_ALIAS }} --scope=$VERCEL_ORG_ID --token=$VERCEL_TOKEN
           echo "vercel_url=$VERCEL_URL" >> $GITHUB_OUTPUT
@@ -306,6 +309,7 @@ jobs:
   deploy-web:
     name: Deploy Web
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     environment:
       name: preview
       url: https://${{ env.WEB_ALIAS }}
@@ -441,6 +445,7 @@ jobs:
   deploy-marketing:
     name: Deploy Marketing
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     environment: preview
     needs: create-database
 
@@ -551,7 +556,7 @@ jobs:
       - name: Smoke test marketing routes
         run: |
           bun scripts/smoke-routes.ts "https://${{ env.MARKETING_ALIAS }}" --localized \
-            / /pricing /enterprise /download /join-us /community /contact \
+            / /pricing /enterprise /download /careers /community /contact \
             /blog /changelog /compare /roadmap /leaderboard /marketplace \
             /agent-orchestration /parallel-coding-agents /factory-2026 \
             /mcp-install /stats /team /starchart /the-production-run
@@ -583,6 +588,7 @@ jobs:
   deploy-admin:
     name: Deploy Admin
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     environment: preview
     needs: create-database
 
@@ -711,6 +717,7 @@ jobs:
   deploy-docs:
     name: Deploy Docs
     runs-on: blacksmith-4vcpu-ubuntu-2404
+    timeout-minutes: 10
     environment: preview
     needs: create-database
 
@@ -802,6 +809,7 @@ jobs:
   post-final-comment:
     name: Post Deployment Comment
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     if: always()
     needs: [create-database, deploy-database, deploy-api, deploy-web, deploy-marketing, deploy-admin, deploy-docs]
     permissions:
